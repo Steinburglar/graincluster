@@ -1,0 +1,68 @@
+# graincluster
+
+`graincluster` is a new repository for atomistic phase-pocket and
+grain-boundary segmentation.
+
+## Goal
+
+Find contiguous regions in large atomistic simulations whose internal edge
+statistics are low-information relative to the rest of the system.
+
+This is a configuration-space segmentation problem, not a local environment
+labeling problem.
+
+## Core Idea
+
+For each atom, build a graph over local neighbors. For each internal edge,
+record:
+
+- species-pair type
+- raw physical edge feature, initially interatomic distance
+
+Then partition atoms so that:
+
+- internal edge distributions are low-entropy
+- strong edges are expensive to cut
+- species mixing contributes to the information cost
+- total cluster count is penalized as a model-complexity term
+
+## What Makes This Different
+
+- raw edge bins, not CDF / percentile bins
+- species-pair-aware entropy, not pooled edge statistics
+- frozen empirical counts for move scoring
+- boundary penalty separate from entropy term
+- designed as an MDL-style segmentation engine
+
+## Current Handoff
+
+The implementation plan lives in:
+
+- [`graincluster_implementation_plan.md`](./graincluster_implementation_plan.md)
+
+That file contains:
+
+- scientific objective
+- objective function
+- move math
+- package layout
+- implementation milestones
+- validation plan
+
+## Recommended Starting Point
+
+Implement in this order:
+
+1. frame and graph data model
+2. species-pair edge typing
+3. raw-bin assignment per pair type
+4. joint entropy model with smoothing
+5. frozen move delta logic
+6. greedy local optimizer
+7. synthetic validation tests
+
+## Near-Term Success Criterion
+
+First success should be a prototype that can separate obvious synthetic phase
+domains and reproduce expected entropy behavior on toy systems.
+
