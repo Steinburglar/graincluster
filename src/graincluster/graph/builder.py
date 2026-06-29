@@ -68,16 +68,53 @@ def _pairs_periodic(
     cell: np.ndarray,
     cutoff: float,
 ) -> tuple[list[tuple[int, int]], list[float]]:
-    """Brute-force periodic pairs for orthorhombic cells."""
+    """Periodic pairs via fractional-coordinate minimum image.
+
+    Works for orthorhombic and triclinic cells. Uses a cKDTree on a
+    replicated (2×2×2) supercell to avoid O(N²) overhead.
+    """
+    from scipy.spatial import cKDTree
+
+    inv_cell = np.linalg.inv(cell)
+    frac = positions @ inv_cell
+    frac -= np.floor(frac)  # wrap to [0, 1)
+
     n = len(positions)
-    diag = np.diag(cell)
+    # Replicate ±1 images in each direction; collect (image_cartesian, original_index)
+    images = []
+    image_idx = []
+    shifts = [0, 1, -1]
+    for s0 in shifts:
+        for s1 in shifts:
+            for s2 in shifts:
+                shift = np.array([s0, s1, s2], dtype=float)
+                cart = (frac + shift) @ cell
+                images.append(cart)
+                image_idx.extend(range(n))
+
+    images_arr = np.vstack(images)   # shape (27*n, 3)
+    image_idx_arr = np.array(image_idx)
+
+    # Build tree on images, query from original positions only
+    wrapped_cart = frac @ cell
+    tree = cKDTree(images_arr)
+    query_tree = cKDTree(wrapped_cart)
+    raw_pairs = query_tree.query_ball_tree(tree, cutoff)
+
     pairs = []
     dists = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            delta = positions[i] - positions[j]
-            delta -= np.round(delta / diag) * diag
-            d = float(np.linalg.norm(delta))
+    seen: set[tuple[int, int]] = set()
+    for i, neighbours in enumerate(raw_pairs):
+        for img_k in neighbours:
+            j = int(image_idx_arr[img_k])
+            if j <= i:
+                continue
+            key = (i, j)
+            if key in seen:
+                continue
+            seen.add(key)
+            dr = images_arr[img_k] - wrapped_cart[i]
+            d = float(np.linalg.norm(dr))
             if d < cutoff:
                 pairs.append((i, j))
                 dists.append(d)
