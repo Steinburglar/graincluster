@@ -257,6 +257,46 @@ boundaries — not isolated atoms with no bonds.
 Use `grain_tag` init because bulk FCC bonds (d=2.556 Å) cannot overcome the
 singleton merge barrier for M≈174 bins with σ=1.0.
 
+### Sigma-5 [001] twist bicrystal (tests entropy-driven grain separation)
+
+```
+/n/holylabs/kozinsky_lab/Users/lsteinberger/systems/cu_bicrystal/
+  data/raw/bicrystal_cu_sigma5_twist.extxyz          6400 atoms (relaxed)
+  data/raw/bicrystal_cu_sigma5_twist_unrelaxed.extxyz
+  data/raw/generate_sigma5_twist.py
+analysis/graincluster/run_graincluster.py
+```
+
+CSL construction:
+- θ = 36.87° (cos=4/5, sin=3/5), CSL vectors E1=a[1,2,0], E2=a[-2,1,0]
+- Grain A: P_a=[[4,8,0],[-8,4,0],[0,0,10]] on standard FCC conventional cell
+- Grain B: P_b=[[8,4,0],[-4,8,0],[0,0,10]] on ROTATED FCC conventional cell
+  (cell_b = cell_a @ R.T, pos_b = pos_a @ R.T)
+- DO NOT build grain B by "rotate grain_a positions + reduce mod cell" — this
+  always creates exact or near-duplicate atom positions because R^{-1}(V) is a
+  grain_a lattice vector for any CSL cell vector V. Build from the rotated cell.
+- 3200 atoms/grain, 32.33 × 32.33 Å interface, 36.15 Å grain depth
+
+Run:
+```bash
+python run_graincluster.py \
+    --input ../../data/raw/bicrystal_cu_sigma5_twist.extxyz \
+    --init grain_tag --alpha 0.1 --cutoff 3.3
+```
+
+Expected (alpha=0.1, cutoff=3.3, beta=0.5, gamma=0.5):
+- Rank 0: ~2400 atoms, 100% grain_0, entropy ≈ 0.02 nats (bulk FCC crystal)
+- Rank 1: ~2368 atoms, 100% grain_1, entropy ≈ 0.21 nats (bulk FCC crystal)
+- Ranks 2–5: 192–416 atoms, interface sublayers, entropy 1.7–2.4 nats
+- Ranks 6–133: size-2 clusters at entropy ≈ 5.2 nats (dislocation core pairs)
+- Singletons: isolated dislocation core atoms with N=0 internal edges
+- Total K ≈ 358, boundary atoms ≈ 2368
+
+Unlike the Sigma-7 or crystal-liquid systems, the two bulk grains ARE separated
+because dislocation core atoms at the interface have distinct bond distributions
+(compressed/stretched bonds) that form a high-entropy "wall" between the grains.
+EMT+FIRE relaxation (42 steps) resolves interface overlaps; use grain_tag init.
+
 ### Sigma-7 CSL twist bicrystal (tests topological behavior, NOT entropy signal)
 
 ```
