@@ -124,3 +124,94 @@ class TestGreedyOptimizer:
         p = _two_domain_partition()
         result = greedy_optimize(p)
         assert result.n_moves >= 0
+
+
+class TestConnectivitySplit:
+    def _line_partition(self):
+        """4-atom line graph (0-1-2-3), all in cluster 0."""
+        from graincluster.graph.edge import EdgeRecord
+        bs = make_bin_scheme(["A-A"], n_bins=4)
+        edges = [
+            EdgeRecord(i=0, j=1, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=1, cut_cost=2.0),
+            EdgeRecord(i=1, j=2, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=1, cut_cost=2.0),
+            EdgeRecord(i=2, j=3, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=1, cut_cost=2.0),
+        ]
+        labels = np.zeros(4, dtype=int)
+        return partition_from_labels(labels, edges, bs, gamma=1.0, beta=0.5)
+
+    def test_connected_cluster_not_split(self):
+        from graincluster.graph.edge import EdgeRecord
+        from graincluster.optimizer.greedy import _split_if_disconnected
+        bs = make_bin_scheme(["A-A"], n_bins=4)
+        edges = [
+            EdgeRecord(i=0, j=1, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=1, cut_cost=2.0),
+            EdgeRecord(i=1, j=2, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=1, cut_cost=2.0),
+            EdgeRecord(i=0, j=2, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=1, cut_cost=2.0),
+        ]
+        labels = np.zeros(3, dtype=int)
+        p = partition_from_labels(labels, edges, bs)
+        n_new = _split_if_disconnected(p, 0)
+        assert n_new == 0
+        assert p.n_clusters() == 1
+
+    def test_disconnected_cluster_splits(self):
+        """Moving bridging atom disconnects the source cluster → split into 2."""
+        from graincluster.optimizer.greedy import _split_if_disconnected
+        p = self._line_partition()
+        # Remove bridge atom 1; cluster 0 becomes {0, 2, 3} — disconnected.
+        p.apply_move(1, p.new_cluster_id())
+        n_new = _split_if_disconnected(p, 0)
+        assert n_new == 1
+        # 3 clusters: {1}, {0}, {2,3}
+        assert p.n_clusters() == 3
+        # Atoms 2 and 3 stay together; atom 0 is isolated.
+        assert int(p.atom_labels[2]) == int(p.atom_labels[3])
+        assert int(p.atom_labels[0]) != int(p.atom_labels[2])
+
+    def test_edge_counts_correct_after_split(self):
+        """After split: isolated {0} has N=0; component {2,3} has N=1."""
+        from graincluster.optimizer.greedy import _split_if_disconnected
+        p = self._line_partition()
+        p.apply_move(1, p.new_cluster_id())
+        _split_if_disconnected(p, 0)
+        cid_0 = int(p.atom_labels[0])
+        cid_2 = int(p.atom_labels[2])
+        assert p.clusters[cid_0].N == 0
+        assert p.clusters[cid_2].N == 1
+
+    def test_objective_consistent_after_split(self):
+        """partition.objective() is self-consistent after a connectivity split."""
+        from graincluster.optimizer.greedy import _split_if_disconnected
+        from graincluster.model.entropy import data_term
+        import pytest as _pytest
+        p = self._line_partition()
+        p.apply_move(1, p.new_cluster_id())
+        _split_if_disconnected(p, 0)
+        M = p._M
+        L_data = (1.0 - p.beta) * sum(data_term(c, M, p.alpha) for c in p.clusters.values())
+        L_cut = p.beta * sum(
+            e.cut_cost for e in p.edges if p.atom_labels[e.i] != p.atom_labels[e.j]
+        )
+        expected = L_data + p.gamma * p.n_clusters() + L_cut
+        assert p.objective() == _pytest.approx(expected, abs=1e-9)
+
+    def test_optimizer_clusters_are_connected(self):
+        """All clusters produced by greedy_optimize are connected subgraphs."""
+        p = _two_domain_partition()
+        greedy_optimize(p)
+        for cid, c in p.clusters.items():
+            if len(c.atom_ids) <= 1:
+                continue
+            reachable: set[int] = set()
+            stack = [next(iter(c.atom_ids))]
+            while stack:
+                atom = stack.pop()
+                if atom in reachable:
+                    continue
+                reachable.add(atom)
+                for eidx in p._adj[atom]:
+                    e = p.edges[eidx]
+                    nbr = e.j if e.i == atom else e.i
+                    if int(p.atom_labels[nbr]) == cid and nbr not in reachable:
+                        stack.append(nbr)
+            assert reachable == c.atom_ids, f"Cluster {cid} is disconnected"
