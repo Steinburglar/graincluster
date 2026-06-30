@@ -16,11 +16,19 @@ def build_edges(
     cutoff: float,
     bin_scheme: BinScheme,
     sigma: float = 1.0,
+    pbc: tuple[bool, bool, bool] | None = None,
 ) -> list[EdgeRecord]:
     """Return undirected EdgeRecord list for one frame.
 
     Neighbor pairs found via cKDTree within cutoff.
     Periodic images handled when frame.cell is provided.
+
+    Parameters
+    ----------
+    pbc:
+        Per-dimension periodic boundary flags (x, y, z). None means fully
+        periodic if cell is provided. Use (True, True, False) for slab/bicrystal
+        geometries where z-periodicity is not wanted.
     """
     positions = np.asarray(frame.positions, dtype=float)
     symbols = list(frame.chemical_symbols or frame.atom_types or [])
@@ -30,8 +38,8 @@ def build_edges(
         cell = np.asarray(frame.box, dtype=float)
         if cell.shape == (3,):
             cell = np.diag(cell)
-        tree = cKDTree(positions, boxsize=None)
-        pairs, dists = _pairs_periodic(positions, cell, cutoff)
+        pbc_flags = (True, True, True) if pbc is None else tuple(pbc)
+        pairs, dists = _pairs_periodic(positions, cell, cutoff, pbc_flags)
     else:
         tree = cKDTree(positions)
         pairs = tree.query_pairs(cutoff, output_type="ndarray")
@@ -67,11 +75,18 @@ def _pairs_periodic(
     positions: np.ndarray,
     cell: np.ndarray,
     cutoff: float,
+    pbc: tuple[bool, bool, bool] = (True, True, True),
 ) -> tuple[list[tuple[int, int]], list[float]]:
     """Periodic pairs via fractional-coordinate minimum image.
 
     Works for orthorhombic and triclinic cells. Uses a cKDTree on a
-    replicated (2×2×2) supercell to avoid O(N²) overhead.
+    replicated supercell to avoid O(N²) overhead.
+
+    Parameters
+    ----------
+    pbc:
+        Per-dimension periodic flags. False in a direction means only the
+        zero-shift image is used for that axis (open boundary).
     """
     from scipy.spatial import cKDTree
 
@@ -80,13 +95,13 @@ def _pairs_periodic(
     frac -= np.floor(frac)  # wrap to [0, 1)
 
     n = len(positions)
-    # Replicate ±1 images in each direction; collect (image_cartesian, original_index)
+    # Replicate ±1 images in periodic directions only
     images = []
     image_idx = []
-    shifts = [0, 1, -1]
-    for s0 in shifts:
-        for s1 in shifts:
-            for s2 in shifts:
+    shifts_per_dim = [[0, 1, -1] if p else [0] for p in pbc]
+    for s0 in shifts_per_dim[0]:
+        for s1 in shifts_per_dim[1]:
+            for s2 in shifts_per_dim[2]:
                 shift = np.array([s0, s1, s2], dtype=float)
                 cart = (frac + shift) @ cell
                 images.append(cart)
