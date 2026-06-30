@@ -96,7 +96,7 @@ class TestInterfaceDetection:
         )
         # Start with all atoms in one cluster.
         labels = np.zeros(2 * n, dtype=int)
-        p = partition_from_labels(labels, edges, bs, alpha=0.5, gamma=0.1, lambda_cut=0.0)
+        p = partition_from_labels(labels, edges, bs, alpha=0.5, gamma=0.1, beta=0.0)
         result = greedy_optimize(p, max_passes=50)
         # Should split into at least 2 clusters (the two phases).
         assert p.n_clusters() >= 2
@@ -115,12 +115,12 @@ class TestInterfaceDetection:
                     raw_value=2.5, bin_idx=4, cut_cost=3.125,
                 ))
         labels = np.zeros(n, dtype=int)
-        p = partition_from_labels(labels, edges, bs, alpha=0.5, gamma=1.0, lambda_cut=1.0)
+        p = partition_from_labels(labels, edges, bs, alpha=0.5, gamma=1.0, beta=0.5)
         greedy_optimize(p, max_passes=20)
         assert p.n_clusters() == 1
 
     def test_strong_bridge_cut_is_expensive(self):
-        """High lambda_cut should prevent cutting a short-distance bridge."""
+        """High beta should prevent cutting a short-distance bridge."""
         n = 3
         bs = make_bin_scheme(["A-A"], n_bins=10, lo=1.0, hi=5.0)
         # Two tiny domains (n=3 each) with very short bridge.
@@ -132,7 +132,7 @@ class TestInterfaceDetection:
             bin_scheme=bs,
         )
         labels = np.array([0] * n + [1] * n, dtype=int)
-        p = partition_from_labels(labels, edges, bs, gamma=0.0, lambda_cut=1000.0)
+        p = partition_from_labels(labels, edges, bs, gamma=0.0, beta=0.99)
         # Even if entropy wants a split, cut cost should dominate.
         result = greedy_optimize(p, allow_splits=False, max_passes=20)
         # The bridge atom (n-1 or n) should not move away from its domain.
@@ -150,7 +150,7 @@ class TestInterfaceDetection:
             bin_scheme=bs,
         )
         labels = np.arange(2 * n, dtype=int)
-        p = partition_from_labels(labels, edges, bs, alpha=0.5, gamma=0.5, lambda_cut=0.5)
+        p = partition_from_labels(labels, edges, bs, alpha=0.5, gamma=0.5, beta=0.5)
         result = greedy_optimize(p, max_passes=50)
         assert result.objective_final < result.objective_initial
 

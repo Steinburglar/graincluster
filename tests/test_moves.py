@@ -12,7 +12,7 @@ from graincluster.model.partition import Partition, partition_from_labels
 from tests.conftest import make_bin_scheme, make_two_domain_edges
 
 
-def _simple_two_cluster_partition(n_per_cluster=4, n_bins=10, alpha=0.5, gamma=1.0, lambda_cut=1.0):
+def _simple_two_cluster_partition(n_per_cluster=4, n_bins=10, alpha=0.5, gamma=1.0, beta=1.0):
     """Two clusters (ids 0 and 1), each a clique, connected by one bridge edge.
 
     Atoms 0..n-1 in cluster 0, atoms n..2n-1 in cluster 1.
@@ -33,7 +33,7 @@ def _simple_two_cluster_partition(n_per_cluster=4, n_bins=10, alpha=0.5, gamma=1
         bridge_raw=3.0,  # bin ~ 5 (bridge)
         bin_scheme=bs,
     )
-    return partition_from_labels(labels, edges, bs, alpha=alpha, gamma=gamma, lambda_cut=lambda_cut)
+    return partition_from_labels(labels, edges, bs, alpha=alpha, gamma=gamma, beta=beta)
 
 
 class TestScoreMove:
@@ -110,7 +110,7 @@ class TestScoreMove:
         objective change is only reliable for large clusters (N >> 1). For N=1 or
         N=2, the approximation can disagree in sign because removing the last few
         edges from a cluster collapses data_term to 0, which the frozen model
-        underestimates. This test uses a large cluster with very high lambda_cut
+        underestimates. This test uses a large cluster with very high beta
         so the cut-cost signal dominates and the approximation is reliable.
         """
         n = 8
@@ -122,8 +122,8 @@ class TestScoreMove:
             bin_scheme=bs,
         )
         labels = np.array([0] * n + [1] * n, dtype=int)
-        # High lambda_cut: moving atom 0 (deep interior) to cluster 1 is very costly.
-        p = partition_from_labels(labels, edges, bs, lambda_cut=50.0)
+        # High beta: cut penalty dominates → moving deep interior atom is very costly.
+        p = partition_from_labels(labels, edges, bs, beta=0.99)
         delta = p.score_move(0, 1)
         # Should clearly identify the move as costly.
         assert delta > 0
@@ -139,18 +139,10 @@ class TestScoreMove:
             bin_scheme=bs,
         )
         labels = np.array([0] * n + [1] * n, dtype=int)
-        lam = 5.0
-        p = partition_from_labels(labels, edges, bs, lambda_cut=lam)
-        # Bridge edge is between atom n-1 (cluster 0) and atom n (cluster 1).
+        p = partition_from_labels(labels, edges, bs, beta=0.9)
         # Moving atom 0 (interior of cluster 0) to cluster 1 increases cut cost.
         delta = p.score_move(0, 1)
-        # The cut cost portion for atom 0's edges (all go to cluster 0 neighbors)
-        # must increase by lambda * sum(cut_costs).
-        adj_edges = [edges[eidx] for eidx in p._adj[0]]
-        neighbor_cut_increase = lam * sum(e.cut_cost for e in adj_edges
-                                           if int(labels[e.j if e.i == 0 else e.i]) == 0)
-        # delta should include this positive cut contribution.
-        assert delta > 0  # Moving an interior atom to the other cluster should be costly.
+        assert delta > 0  # interior atom move to other cluster is costly at high beta
 
 
 class TestExactDelta:
@@ -176,7 +168,7 @@ class TestExactDelta:
         edges = [EdgeRecord(i=0, j=1, pair_key="A-A", pair_type_idx=0,
                             raw_value=2.5, bin_idx=9, cut_cost=3.125)]
         labels = np.array([0, 0], dtype=int)  # both in cluster 0, one internal edge
-        p = partition_from_labels(labels, edges, bs, gamma=0.0, lambda_cut=0.0)
+        p = partition_from_labels(labels, edges, bs, gamma=0.0, beta=0.0)
         assert p.clusters[0].N == 1
 
         # Split atom 0 to a new singleton.
@@ -197,7 +189,7 @@ class TestExactDelta:
             bin_scheme=bs,
         )
         labels = np.array([0] * n + [1] * n, dtype=int)
-        p = partition_from_labels(labels, edges, bs, gamma=0.5, lambda_cut=1.0)
+        p = partition_from_labels(labels, edges, bs, gamma=0.5, beta=1.0)
 
         atom = n - 1  # bridge atom in cluster 0
         target = 1
@@ -215,7 +207,7 @@ class TestExactDelta:
         edges = [EdgeRecord(i=0, j=1, pair_key="A-A", pair_type_idx=0,
                             raw_value=2.5, bin_idx=9, cut_cost=3.125)]
         labels = np.array([0, 1], dtype=int)
-        p = partition_from_labels(labels, edges, bs, gamma=0.5, lambda_cut=1.0)
+        p = partition_from_labels(labels, edges, bs, gamma=0.5, beta=1.0)
         # Both clusters are singletons (N=0).
         obj_before = p.objective()
         delta_exact = p.score_move(0, 1, exact_below_N=1000)
@@ -241,7 +233,7 @@ class TestObjectiveConsistency:
             bin_scheme=bs,
         )
         labels = np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=int)
-        p = partition_from_labels(labels, edges, bs, gamma=0.0, lambda_cut=0.0)
+        p = partition_from_labels(labels, edges, bs, gamma=0.0, beta=0.0)
         obj_sep = p.objective()
         # Force merge by moving all cluster-1 atoms into cluster 0.
         for atom in range(4, 8):
@@ -267,7 +259,7 @@ class TestObjectiveConsistency:
         # Cluster 1: no internal edges → N=0.
         assert p.clusters[1].N == 0
         # Edge (1,2) is cut.
-        cut_cost_total = p.lambda_cut * sum(
+        cut_cost_total = p.beta * sum(
             e.cut_cost for e in p.edges if p.atom_labels[e.i] != p.atom_labels[e.j]
         )
-        assert cut_cost_total == pytest.approx(1.0 * 3.0)
+        assert cut_cost_total == pytest.approx(p.beta * 3.0)

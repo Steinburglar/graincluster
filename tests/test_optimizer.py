@@ -10,7 +10,7 @@ from graincluster.optimizer.greedy import greedy_optimize, OptimizeResult
 from tests.conftest import make_bin_scheme, make_two_domain_edges
 
 
-def _two_domain_partition(n=5, alpha=0.5, gamma=0.5, lambda_cut=0.5):
+def _two_domain_partition(n=5, alpha=0.5, gamma=0.5, beta=0.5):
     bs = make_bin_scheme(["A-A"], n_bins=10, lo=1.0, hi=5.0)
     edges = make_two_domain_edges(
         n_a=n, n_b=n,
@@ -19,7 +19,7 @@ def _two_domain_partition(n=5, alpha=0.5, gamma=0.5, lambda_cut=0.5):
         bin_scheme=bs,
     )
     labels = np.arange(2 * n, dtype=int)  # each atom its own cluster
-    return partition_from_labels(labels, edges, bs, alpha=alpha, gamma=gamma, lambda_cut=lambda_cut)
+    return partition_from_labels(labels, edges, bs, alpha=alpha, gamma=gamma, beta=beta)
 
 
 class TestGreedyOptimizer:
@@ -49,7 +49,7 @@ class TestGreedyOptimizer:
             EdgeRecord(i=0, j=2, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=1, cut_cost=2.0),
         ]
         labels = np.zeros(3, dtype=int)
-        p = partition_from_labels(labels, edges, bs, gamma=10.0, lambda_cut=10.0)
+        p = partition_from_labels(labels, edges, bs, gamma=10.0, beta=0.9)
         result = greedy_optimize(p, allow_splits=False)
         assert result.n_moves == 0
 
@@ -65,7 +65,7 @@ class TestGreedyOptimizer:
         labels = np.array([0] * 4 + [1] * 4, dtype=int)
         # alpha=0.0 gives zero self-information for dominant bins → no signal.
         # Use default alpha=0.5 so smoothing creates a positive reward for merging.
-        p = partition_from_labels(labels, edges, bs, gamma=10.0, lambda_cut=0.0, alpha=0.5)
+        p = partition_from_labels(labels, edges, bs, gamma=10.0, beta=0.0, alpha=0.5)
         greedy_optimize(p, allow_splits=False)
         assert p.n_clusters() == 1
 
@@ -80,7 +80,7 @@ class TestGreedyOptimizer:
             bin_scheme=bs,
         )
         labels = np.array([0] * 5 + [1] * 5, dtype=int)
-        p = partition_from_labels(labels, edges, bs, gamma=0.0, lambda_cut=100.0)
+        p = partition_from_labels(labels, edges, bs, gamma=0.0, beta=0.99)
         result = greedy_optimize(p, allow_splits=False)
         assert p.n_clusters() == 2
 

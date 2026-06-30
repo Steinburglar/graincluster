@@ -27,7 +27,7 @@ class Partition:
     bin_scheme: BinScheme
     alpha: float = 0.5
     gamma: float = 1.0
-    lambda_cut: float = 1.0
+    beta: float = 0.5   # cut-entropy balance ∈ [0,1]; 0=pure entropy, 1=pure cut
     _M: int = field(init=False, repr=False)
     _next_cluster_id: int = field(init=False, repr=False)
     # adjacency index: atom -> list of edge indices
@@ -49,10 +49,12 @@ class Partition:
     # ------------------------------------------------------------------
 
     def objective(self) -> float:
-        """Full L = sum_C N_C H_C + gamma * K + lambda * sum_cut s_ij."""
-        L_data = sum(data_term(c, self._M, self.alpha) for c in self.clusters.values())
+        """Full L = (1-β) Σ_C N_C H_C + β Σ_cut s_ij + γ K."""
+        L_data = (1.0 - self.beta) * sum(
+            data_term(c, self._M, self.alpha) for c in self.clusters.values()
+        )
         K = len(self.clusters)
-        L_cut = self.lambda_cut * sum(
+        L_cut = self.beta * sum(
             e.cut_cost
             for e in self.edges
             if self.atom_labels[e.i] != self.atom_labels[e.j]
@@ -97,9 +99,9 @@ class Partition:
             neighbor = e.j if e.i == atom else e.i
             nbr_cluster = int(self.atom_labels[neighbor])
             if nbr_cluster == src_id:
-                delta_cut += self.lambda_cut * e.cut_cost
+                delta_cut += self.beta * e.cut_cost
             elif nbr_cluster == target_cluster_id:
-                delta_cut -= self.lambda_cut * e.cut_cost
+                delta_cut -= self.beta * e.cut_cost
 
         # --- entropy / data-term delta ---
         use_exact = (
@@ -136,7 +138,7 @@ class Partition:
         if src_becomes_empty:
             delta_K -= 1
 
-        return delta_entropy + delta_cut + self.gamma * delta_K
+        return (1.0 - self.beta) * delta_entropy + delta_cut + self.gamma * delta_K
 
     def _exact_data_delta(
         self,
@@ -274,7 +276,7 @@ class Partition:
         dt_merged = data_term_from_counts(merged_counts, merged_N, M, alpha)
         dt_before = data_term(ca, M, alpha) + data_term(cb, M, alpha)
 
-        return (dt_merged - dt_before) - self.lambda_cut * between_cut_cost - self.gamma
+        return (1.0 - self.beta) * (dt_merged - dt_before) - self.beta * between_cut_cost - self.gamma
 
     def apply_cluster_merge(self, src_cid: int, tgt_cid: int) -> None:
         """Absorb cluster src_cid into tgt_cid, updating all state.
@@ -332,7 +334,7 @@ def partition_from_labels(
     bin_scheme: BinScheme,
     alpha: float = 0.5,
     gamma: float = 1.0,
-    lambda_cut: float = 1.0,
+    beta: float = 0.5,
 ) -> Partition:
     """Build a Partition by scanning edges to populate cluster count tables."""
     atom_labels = np.asarray(atom_labels, dtype=int)
@@ -358,5 +360,5 @@ def partition_from_labels(
         bin_scheme=bin_scheme,
         alpha=alpha,
         gamma=gamma,
-        lambda_cut=lambda_cut,
+        beta=beta,
     )
