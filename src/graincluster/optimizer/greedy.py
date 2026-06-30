@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..model.cluster import ClusterState
 from ..model.partition import Partition
 
 
@@ -22,6 +23,96 @@ class OptimizeResult:
     n_moves: int
     objective_initial: float
     objective_final: float
+
+
+def _split_if_disconnected(partition: Partition, cluster_id: int) -> int:
+    """Split cluster into connected components if an atom move disconnected it.
+
+    BFS over internal edges only. Smaller components become new clusters;
+    the largest component keeps the original cluster ID.
+
+    Returns number of new clusters created (0 = already connected).
+    """
+    c = partition.clusters.get(cluster_id)
+    if c is None or len(c.atom_ids) <= 1:
+        return 0
+
+    remaining = set(c.atom_ids)
+    components: list[set[int]] = []
+    while remaining:
+        start = next(iter(remaining))
+        comp: set[int] = set()
+        stack = [start]
+        while stack:
+            atom = stack.pop()
+            if atom in comp:
+                continue
+            comp.add(atom)
+            for eidx in partition._adj[atom]:
+                e = partition.edges[eidx]
+                nbr = e.j if e.i == atom else e.i
+                if int(partition.atom_labels[nbr]) == cluster_id and nbr not in comp:
+                    stack.append(nbr)
+        components.append(comp)
+        remaining -= comp
+
+    if len(components) == 1:
+        return 0
+
+    largest = max(components, key=len)
+
+    n_new = 0
+    for small_comp in components:
+        if small_comp is largest:
+            continue
+
+        new_cid = partition.new_cluster_id()
+        new_c = ClusterState(cluster_id=new_cid)
+        partition.clusters[new_cid] = new_c
+        new_c.atom_ids = small_comp.copy()
+
+        for atom in small_comp:
+            partition.atom_labels[atom] = new_cid
+            c.atom_ids.discard(atom)
+
+        # Scan edges from this component; process each edge index exactly once.
+        seen_eidx: set[int] = set()
+        for atom in small_comp:
+            for eidx in partition._adj[atom]:
+                if eidx in seen_eidx:
+                    continue
+                seen_eidx.add(eidx)
+                e = partition.edges[eidx]
+                nbr = e.j if e.i == atom else e.i
+                nbr_label = int(partition.atom_labels[nbr])
+                key = (e.pair_type_idx, e.bin_idx)
+
+                if nbr in small_comp:
+                    # Internal to new cluster — move count from original.
+                    new_c.counts[key] = new_c.counts.get(key, 0) + 1
+                    new_c.N += 1
+                    cnt = c.counts.get(key, 0) - 1
+                    if cnt <= 0:
+                        c.counts.pop(key, None)
+                    else:
+                        c.counts[key] = cnt
+                    c.N -= 1
+                elif nbr_label == cluster_id:
+                    # Cross-component edge (between small_comp and largest).
+                    # Was internal to original, now cut — remove from original.
+                    cnt = c.counts.get(key, 0) - 1
+                    if cnt <= 0:
+                        c.counts.pop(key, None)
+                    else:
+                        c.counts[key] = cnt
+                    c.N -= 1
+
+        c.invalidate_entropy()
+        new_c.invalidate_entropy()
+        n_new += 1
+
+    c.invalidate_entropy()
+    return n_new
 
 
 def greedy_optimize(
@@ -87,6 +178,9 @@ def greedy_optimize(
             if best_target is not None:
                 partition.apply_move(atom, best_target)
                 moves_this_pass += 1
+                # Enforce connectivity: split src if atom move disconnected it.
+                if src_id in partition.clusters:
+                    _split_if_disconnected(partition, src_id)
 
         total_moves += moves_this_pass
         if moves_this_pass == 0:
