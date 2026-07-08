@@ -11,6 +11,10 @@ from ..features.binning import BinScheme
 from .cluster import ClusterState
 from .entropy import cluster_entropy, data_term, data_term_from_counts, self_information
 
+# Sentinel cluster ID for the permanent "other" / background cluster.
+# Always exists, never deleted, excluded from gamma*K.
+OTHER_ID: int = -1
+
 
 @dataclass
 class Partition:
@@ -35,7 +39,12 @@ class Partition:
 
     def __post_init__(self) -> None:
         self._M = self.bin_scheme.total_categories()
-        self._next_cluster_id = max(self.clusters.keys(), default=-1) + 1
+        # Exclude OTHER_ID from the ID counter; real cluster IDs start at 0.
+        real_ids = [k for k in self.clusters if k != OTHER_ID]
+        self._next_cluster_id = max(real_ids, default=-1) + 1
+        # Ensure the "other" cluster always exists.
+        if OTHER_ID not in self.clusters:
+            self.clusters[OTHER_ID] = ClusterState(cluster_id=OTHER_ID)
         self._build_adj()
 
     def _build_adj(self) -> None:
@@ -49,11 +58,14 @@ class Partition:
     # ------------------------------------------------------------------
 
     def objective(self) -> float:
-        """Full L = (1-β) Σ_C N_C H_C + β Σ_cut s_ij + γ K."""
+        """Full L = (1-β) Σ_C N_C H_C + β Σ_cut s_ij + γ K.
+
+        OTHER_ID is excluded from gamma*K (free background cluster).
+        """
         L_data = (1.0 - self.beta) * sum(
             data_term(c, self._M, self.alpha) for c in self.clusters.values()
         )
-        K = len(self.clusters)
+        K = sum(1 for cid in self.clusters if cid != OTHER_ID)
         L_cut = self.beta * sum(
             e.cut_cost
             for e in self.edges
@@ -131,7 +143,10 @@ class Partition:
                         delta_entropy += math.log(M) if M > 0 else 0.0
 
         # --- cluster count delta ---
-        src_becomes_empty = len(src.atom_ids) == 1
+        # OTHER_ID never counts toward K (free background), so:
+        #   - src OTHER_ID emptying: no delta_K (other persists, was never in K)
+        #   - tgt OTHER_ID: never "new" (always exists, not in K), no delta_K
+        src_becomes_empty = len(src.atom_ids) == 1 and src_id != OTHER_ID
         delta_K = 0
         if tgt_is_new:
             delta_K += 1
@@ -221,8 +236,8 @@ class Partition:
                 # Was cut, now internal to tgt. Add to tgt.
                 tgt.add_edge(e.pair_type_idx, e.bin_idx)
 
-        # Remove src if empty.
-        if src.is_empty():
+        # Remove src if empty (OTHER_ID is never deleted).
+        if src.is_empty() and src_id != OTHER_ID:
             del self.clusters[src_id]
 
     def new_cluster_id(self) -> int:
@@ -317,7 +332,8 @@ class Partition:
     # ------------------------------------------------------------------
 
     def n_clusters(self) -> int:
-        return len(self.clusters)
+        """Number of real clusters (excludes OTHER_ID)."""
+        return sum(1 for cid in self.clusters if cid != OTHER_ID)
 
     def entropy_per_cluster(self) -> dict[int, float]:
         return {cid: cluster_entropy(c, self._M, self.alpha)
@@ -340,7 +356,7 @@ def partition_from_labels(
     atom_labels = np.asarray(atom_labels, dtype=int)
     n_atoms = len(atom_labels)
 
-    clusters: dict[int, ClusterState] = {}
+    clusters: dict[int, ClusterState] = {OTHER_ID: ClusterState(cluster_id=OTHER_ID)}
     for atom_idx in range(n_atoms):
         cid = int(atom_labels[atom_idx])
         if cid not in clusters:

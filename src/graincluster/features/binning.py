@@ -113,6 +113,53 @@ class BinScheme:
         return self.schemes[pair_key].assign(values)
 
 
+def _quantile_bins(
+    data: np.ndarray,
+    n_bins: int = 50,
+    p_lo: float = 1.0,
+    p_hi: float = 99.0,
+) -> tuple[np.ndarray, float, float]:
+    """Compute quantile-based bin edges (equal-population bins).
+
+    Each bin covers a fixed percentile range. For n_bins, bins are:
+    [p_lo, p_lo + (p_hi-p_lo)/n_bins, ..., p_hi].
+
+    Returns (edges, range_lo, range_hi).
+    """
+    data = np.asarray(data, dtype=float)
+    if len(data) < 4:
+        raise ValueError(f"Need at least 4 samples, got {len(data)}")
+
+    range_lo = float(np.percentile(data, p_lo))
+    range_hi = float(np.percentile(data, p_hi))
+
+    if range_hi <= range_lo:
+        raise ValueError("Zero-span range after clipping — all values identical?")
+
+    # Create quantile percentiles: p_lo, p_lo + step, p_lo + 2*step, ..., p_hi
+    quantiles = np.linspace(p_lo, p_hi, n_bins + 1)
+    edges = np.percentile(data, quantiles)
+
+    return edges, range_lo, range_hi
+
+
+def fit_pair_bin_scheme_quantile(
+    pair_key: str,
+    values: np.ndarray,
+    n_bins: int = 50,
+    p_lo: float = 1.0,
+    p_hi: float = 99.0,
+) -> PairBinScheme:
+    """Fit a PairBinScheme using quantile-based (CDF) bins.
+
+    All bins contain approximately equal numbers of edges from the reference data.
+    """
+    edges, rlo, rhi = _quantile_bins(
+        values, n_bins=n_bins, p_lo=p_lo, p_hi=p_hi
+    )
+    return PairBinScheme(pair_key=pair_key, edges=edges, range_lo=rlo, range_hi=rhi)
+
+
 def fit_bin_scheme(
     pair_values: dict[str, np.ndarray],
     p_lo: float = 1.0,
@@ -131,6 +178,29 @@ def fit_bin_scheme(
         vals = np.asarray(pair_values[pk], dtype=float)
         schemes[pk] = fit_pair_bin_scheme(
             pk, vals, p_lo=p_lo, p_hi=p_hi, min_bins=min_bins, max_bins=max_bins
+        )
+    bs = BinScheme(schemes=schemes, _pair_types=pair_types)
+    return bs
+
+
+def fit_bin_scheme_quantile(
+    pair_values: dict[str, np.ndarray],
+    n_bins: int = 50,
+    p_lo: float = 1.0,
+    p_hi: float = 99.0,
+) -> BinScheme:
+    """Fit a BinScheme using quantile-based (CDF) bins.
+
+    All bins contain approximately equal numbers of edges per pair type.
+    This makes the prior uniform over the empirical quantiles, making entropy
+    relative to the global reference distribution.
+    """
+    pair_types = sorted(pair_values.keys())
+    schemes: dict[str, PairBinScheme] = {}
+    for pk in pair_types:
+        vals = np.asarray(pair_values[pk], dtype=float)
+        schemes[pk] = fit_pair_bin_scheme_quantile(
+            pk, vals, n_bins=n_bins, p_lo=p_lo, p_hi=p_hi
         )
     bs = BinScheme(schemes=schemes, _pair_types=pair_types)
     return bs

@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..model.cluster import ClusterState
-from ..model.partition import Partition
+from ..model.partition import Partition, OTHER_ID
 
 
 @dataclass
@@ -160,6 +160,9 @@ def greedy_optimize(
             # Exclude current cluster.
             src_id = int(partition.atom_labels[atom])
             neighbor_clusters.discard(src_id)
+            # OTHER_ID is always a candidate target (except when already there).
+            if src_id != OTHER_ID:
+                neighbor_clusters.add(OTHER_ID)
 
             for cid in neighbor_clusters:
                 delta = partition.score_move(atom, cid, exact_below_N=exact_below_N)
@@ -178,8 +181,9 @@ def greedy_optimize(
             if best_target is not None:
                 partition.apply_move(atom, best_target)
                 moves_this_pass += 1
-                # Enforce connectivity: split src if atom move disconnected it.
-                if src_id in partition.clusters:
+                # Enforce connectivity: split src if disconnected.
+                # OTHER_ID is allowed to be disconnected (background class).
+                if src_id != OTHER_ID and src_id in partition.clusters:
                     _split_if_disconnected(partition, src_id)
 
         total_moves += moves_this_pass

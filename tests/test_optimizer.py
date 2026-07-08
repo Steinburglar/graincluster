@@ -7,6 +7,7 @@ import pytest
 
 from graincluster.model.partition import partition_from_labels
 from graincluster.optimizer.greedy import greedy_optimize, OptimizeResult
+from graincluster.optimizer.louvain import louvain_optimize
 from tests.conftest import make_bin_scheme, make_two_domain_edges
 
 
@@ -54,7 +55,11 @@ class TestGreedyOptimizer:
         assert result.n_moves == 0
 
     def test_two_identical_domains_merge(self):
-        """Two domains with same edge distribution and no cut penalty should merge."""
+        """Two identical domains merge via Louvain cluster-merge phase.
+
+        Greedy atom moves don't fire (bridge migration costs cut edges), but the
+        exact cluster-merge sweep sees ΔL << 0 and absorbs both into one.
+        """
         bs = make_bin_scheme(["A-A"], n_bins=10, lo=1.0, hi=5.0)
         edges = make_two_domain_edges(
             n_a=4, n_b=4,
@@ -63,10 +68,8 @@ class TestGreedyOptimizer:
             bin_scheme=bs,
         )
         labels = np.array([0] * 4 + [1] * 4, dtype=int)
-        # alpha=0.0 gives zero self-information for dominant bins → no signal.
-        # Use default alpha=0.5 so smoothing creates a positive reward for merging.
-        p = partition_from_labels(labels, edges, bs, gamma=10.0, beta=0.0, alpha=0.5)
-        greedy_optimize(p, allow_splits=False)
+        p = partition_from_labels(labels, edges, bs, gamma=10.0, beta=0.5, alpha=0.5)
+        louvain_optimize(p, allow_splits=False)
         assert p.n_clusters() == 1
 
     def test_two_different_domains_stay_separate(self):

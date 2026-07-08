@@ -17,6 +17,7 @@ def build_edges(
     bin_scheme: BinScheme,
     sigma: float = 1.0,
     pbc: tuple[bool, bool, bool] | None = None,
+    pair_cutoffs: dict[str, float] | None = None,
 ) -> list[EdgeRecord]:
     """Return undirected EdgeRecord list for one frame.
 
@@ -29,20 +30,27 @@ def build_edges(
         Per-dimension periodic boundary flags (x, y, z). None means fully
         periodic if cell is provided. Use (True, True, False) for slab/bicrystal
         geometries where z-periodicity is not wanted.
+    pair_cutoffs:
+        Optional per-pair cutoff overrides, e.g. {'C-C': 2.0}. Pairs not
+        listed use the global `cutoff`. Tree search runs at the max cutoff.
     """
     positions = np.asarray(frame.positions, dtype=float)
     symbols = list(frame.chemical_symbols or frame.atom_types or [])
     n_atoms = len(positions)
+
+    max_cutoff = cutoff
+    if pair_cutoffs:
+        max_cutoff = max(cutoff, max(pair_cutoffs.values()))
 
     if frame.box is not None:
         cell = np.asarray(frame.box, dtype=float)
         if cell.shape == (3,):
             cell = np.diag(cell)
         pbc_flags = (True, True, True) if pbc is None else tuple(pbc)
-        pairs, dists = _pairs_periodic(positions, cell, cutoff, pbc_flags)
+        pairs, dists = _pairs_periodic(positions, cell, max_cutoff, pbc_flags)
     else:
         tree = cKDTree(positions)
-        pairs = tree.query_pairs(cutoff, output_type="ndarray")
+        pairs = tree.query_pairs(max_cutoff, output_type="ndarray")
         i_idx, j_idx = pairs[:, 0], pairs[:, 1]
         dists = np.linalg.norm(positions[i_idx] - positions[j_idx], axis=1)
         pairs = list(zip(i_idx.tolist(), j_idx.tolist()))
@@ -55,6 +63,9 @@ def build_edges(
         sj = symbols[j] if symbols else str(j)
         pk = canonical_pair_key(si, sj)
         if pk not in bin_scheme.schemes:
+            continue
+        effective_cutoff = pair_cutoffs.get(pk, cutoff) if pair_cutoffs else cutoff
+        if d > effective_cutoff:
             continue
         pt_idx = pair_types.index(pk)
         b_idx = bin_scheme.assign_one(pk, d)

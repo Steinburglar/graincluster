@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..model.partition import Partition
+from ..model.partition import Partition, OTHER_ID
 from .greedy import greedy_optimize, OptimizeResult
 
 
@@ -52,6 +52,9 @@ def cluster_merge_sweep(
     n_merged = 0
     for cid_a, cid_b in pairs:
         if cid_a not in partition.clusters or cid_b not in partition.clusters:
+            continue
+        # Never merge OTHER_ID with a real cluster.
+        if cid_a == OTHER_ID or cid_b == OTHER_ID:
             continue
         delta = partition.score_cluster_merge(cid_a, cid_b)
         if delta < tol:

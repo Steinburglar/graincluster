@@ -1,30 +1,32 @@
 """Entropy and objective computations.
 
-All entropy uses Dirichlet smoothing (pseudocount alpha > 0) to avoid log(0).
-M = total joint categories = sum of n_bins per pair type.
+Data term uses the Bayesian marginal likelihood (Dirichlet-Multinomial):
 
-Smoothed probability:
-    p̃_i(C) = (n_i(C) + alpha) / (N_C + alpha * M)
+    L_data(C) = -log P(n | alpha, M)
+              = log Γ(N + alpha*M) - log Γ(alpha*M)
+                - sum_i [ log Γ(n_i + alpha) - log Γ(alpha) ]
 
-Joint entropy:
-    H_C = -sum_i p̃_i * log(p̃_i)
+This is the exact MDL "mixture code" length for a multinomial cluster with a
+symmetric Dirichlet(alpha) prior over M joint (pair_type, bin) categories.
+Zero-count categories drop out: Γ(0 + alpha) - Γ(alpha) = 0.
 
-Data term contribution of cluster C:
-    L_data(C) = N_C * H_C
+The prior concentration alpha controls prior strength: total pseudo-observations
+= alpha * M. alpha → 0 recovers MLE; large alpha forces uniform.
 
-Self-information of category i under cluster C (frozen model):
-    I_C(i) = -log(p̃_i(C))
+Self-information for the frozen move-scoring model:
+    I_C(t, b) = -log p̃_{t,b}(C),  p̃_i = (n_i + alpha) / (N + alpha*M)
+
+This is exact: the marginal contribution of one new edge to L_data is
+L_data(n + e_i) - L_data(n) = log(N + alpha*M) - log(n_i + alpha) = I_C(i).
+So self_information() is consistent with the Bayesian data_term.
 """
 
 from __future__ import annotations
 
 import math
+from math import lgamma
 
 from .cluster import ClusterState
-
-
-def _smoothed_prob(count: int, total: int, alpha: float, M: int) -> float:
-    return (count + alpha) / (total + alpha * M)
 
 
 def cluster_entropy(
@@ -32,9 +34,10 @@ def cluster_entropy(
     M: int,
     alpha: float = 0.5,
 ) -> float:
-    """Joint entropy H_C with Dirichlet smoothing over M categories.
+    """Smoothed entropy H(p̃) for display/reporting only.
 
-    If N == 0 (no internal edges), entropy is 0 by convention.
+    Not used in the objective — L_data uses the Bayesian marginal.
+    If N == 0, returns 0.
     """
     if cluster.N == 0:
         return 0.0
@@ -47,8 +50,6 @@ def cluster_entropy(
         p = (count + alpha) / denom
         h -= p * math.log(p)
 
-    # categories with count == 0 contribute (alpha / denom) * log(alpha / denom)
-    # number of zero-count categories = M - len(cluster.counts)
     n_zero = M - len(cluster.counts)
     if n_zero > 0 and alpha > 0.0:
         p_zero = alpha / denom
@@ -62,8 +63,17 @@ def data_term(
     M: int,
     alpha: float = 0.5,
 ) -> float:
-    """N_C * H_C for one cluster."""
-    return cluster.N * cluster_entropy(cluster, M, alpha)
+    """Bayesian marginal code length -log P(n | alpha, M) for one cluster.
+
+    Zero-count categories contribute lgamma(alpha) - lgamma(alpha) = 0
+    and are skipped automatically.
+    """
+    if cluster.N == 0:
+        return 0.0
+    N = cluster.N
+    result = lgamma(N + alpha * M) - lgamma(alpha * M)
+    result -= sum(lgamma(c + alpha) - lgamma(alpha) for c in cluster.counts.values())
+    return result
 
 
 def data_term_from_counts(
@@ -72,22 +82,15 @@ def data_term_from_counts(
     M: int,
     alpha: float = 0.5,
 ) -> float:
-    """data_term (N*H) computed from a raw counts dict + N.
+    """Bayesian marginal code length from a raw counts dict + N.
 
     Used for exact delta scoring without a full ClusterState.
     """
     if N == 0:
         return 0.0
-    denom = N + alpha * M
-    h = 0.0
-    for count in counts.values():
-        p = (count + alpha) / denom
-        h -= p * math.log(p)
-    n_zero = M - len(counts)
-    if n_zero > 0 and alpha > 0.0:
-        p_zero = alpha / denom
-        h -= n_zero * p_zero * math.log(p_zero)
-    return N * h
+    result = lgamma(N + alpha * M) - lgamma(alpha * M)
+    result -= sum(lgamma(c + alpha) - lgamma(alpha) for c in counts.values())
+    return result
 
 
 def self_information(

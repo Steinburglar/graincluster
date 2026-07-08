@@ -17,27 +17,57 @@ The objective, data model, and optimization backend are all different.
 graphcluster uses leidenalg with preset objectives; graincluster implements
 its own Louvain-style optimizer against the MDL objective.
 
-## Objective
+## Objective (Updated: Bayesian Marginal Likelihood)
 
 ```
-L = sum_C N_C * H_C + gamma * K + lambda_cut * sum_cut s_ij
+L = (1 − β) · Σ_C L_data(C) + β · Σ_cut s_ij + γ · K
 ```
 
-- `N_C`: total internal edge count for cluster C
-- `H_C`: joint entropy over (pair_type, bin) with Dirichlet smoothing
+where `L_data(C)` is the Bayesian marginal code length:
+
+```
+L_data(C) = log Γ(N + αM) − log Γ(αM) − Σ_i [log Γ(n_i + α) − log Γ(α)]
+```
+
+- `L_data(C)`: exact MDL "mixture code" length for cluster C's edges under Dirichlet(α) prior
+- `N`: total internal edges, `M`: total (pair_type, bin) categories, `α`: Dirichlet concentration
+- `n_i`: count of edges in category i; automatically accounts for zero-count bins
 - `K`: number of clusters (model-complexity penalty)
-- `s_ij = d^2 / (2 * sigma^2)`: cut cost for boundary edge (i,j)
+- `s_ij = d^2 / (2σ²)`: cut cost for boundary edge (i,j)
+- `β ∈ [0,1]`: entropy/cut balance weight
 
-## Scientific Guardrails (do not change these)
+**Differences from prior N·H formulation:**
+- L_data is the marginal likelihood (integrating out θ), not a plug-in entropy estimate
+- Avoids double-counting: doesn't estimate θ from data then pretend θ is known
+- Automatically encodes Occam's razor: includes KL divergence cost of learning distribution from data
+- Converges correctly for large N (BIC-like term, not linear in N for concentrated clusters)
 
-- **Raw-space linear bins**, not CDF/percentile bins — physical scale must
-  be preserved across the trajectory
+## Binning Schemes (Linear and Quantile)
+
+**Linear binning** (default, Freedman-Diaconis):
+- `fit_bin_scheme(pair_values)` — raw-space linear bins
+- Fixed bin width per pair type, range clipped to [p1, p99]
+- Prior: Dirichlet(α,...,α) — uniform over bins
+- Physical scale preserved across trajectories
+
+**Quantile binning** (CDF-based):
+- `fit_bin_scheme_quantile(pair_values, n_bins=50)` — equal-population bins
+- Each bin contains ~1/n_bins fraction of reference data
+- Bins frozen at reference quantiles; never updated during clustering
+- Prior: currently Dirichlet(α,...,α) — uniform over quantiles
+  - **TODO**: implement weighted prior Dirichlet(α·p_global) to encode expected distribution
+- Entropy becomes relative to reference distribution structure
+
+Per-pair cutoffs (`--pair-cutoffs C-C=2.0`) are applied before binning; edges beyond the pair-specific cutoff are excluded.
+
+## Scientific Invariants
+
 - **Species-pair identity is part of the information model** — joint entropy
   over (pair_type_idx, bin_idx), not pooled
 - **Cluster-level normalization** over total internal edge mass, not per pair
   type — keeps species mixing in the cost
 - **Boundary penalty separate from entropy term**
-- **Dirichlet smoothing** (alpha > 0) — prevents log(0) singularities
+- **Bayesian marginal likelihood** (not plug-in N·H) — provides correct MDL code length
 - **Frozen empirical model for move scoring** — move deltas use pre-move
   cluster states; counts updated only after acceptance. Exact path used
   for small clusters (N < exact_below_N=10 by default).
@@ -79,29 +109,18 @@ these invalidate `_entropy`.
 they keep `_adj`, counts, and atom_ids consistent.
 
 **BinScheme** — fit once from a reference edge sample; bins are fixed during
-optimization. `fit_bin_scheme(pair_values)` takes `dict[pair_key, np.ndarray]`.
+optimization. `fit_bin_scheme(pair_values)` or `fit_bin_scheme_quantile(pair_values, n_bins=50)`
+are the main entry points. See "Binning Schemes" section above for details.
 
-## Binning
+## The "other" Cluster (cluster_id = -1)
 
-`fit_bin_scheme` uses Freedman-Diaconis per pair type:
-- `h = 2 * IQR * N^(-1/3)`
-- bin count `B = ceil(span / h)`, clamped to [min_bins=4, max_bins=256]
-- range clipped to [p1, p99] of reference data
-- degenerate IQR (`< 1e-6`): falls back to `sqrt(N)` bins
+A special permanent background cluster that is:
+- Always present (never deleted)
+- Excluded from the cluster count K in `objective()` (no gamma penalty)
+- Always a valid move target in `greedy_optimize` and `louvain_optimize`
+- Initialized with `--init merged` or as a fallback for atoms that don't fit elsewhere
 
-**IQR degeneracy pitfall**: floating-point IQR can be ~1e-8 (not exactly 0)
-when >50% of bonds are at identical distances (e.g. perfect FCC crystal).
-The check must be `iqr < 1e-6`, not `iqr <= 0.0`, to catch this.
-
-FD is scale-invariant for symmetric unimodal distributions: bin COUNT is the
-same for narrow vs. broad distributions; what changes is bin WIDTH. For other
-distribution shapes spread does affect bin count.
-
-**M and the singleton merge barrier** (see section below): M controls how
-hard it is to bootstrap clusters from singleton init. Structures with broad
-bond distributions (atom overlaps, mixed crystal+liquid) → smaller M → lower
-barrier. Pure crystal in a correct bicrystal → large M → barrier not overcome
-by bulk FCC bonds with σ=1.0.
+Implements the concept of "unidentified structure/lack of structure" — atoms that don't cohere into well-defined clusters. Particularly useful when singleton init would be blocked by merge barrier (large M) or when a mixed-phase system has atoms that don't naturally cluster.
 
 ## Merge Barrier
 
@@ -339,6 +358,99 @@ Tests are in `tests/`:
   FD bin width scaling
 - `test_louvain.py` — score_cluster_merge exactness, apply_cluster_merge state
   consistency, cluster_merge_sweep behavior, local-minimum escape
+
+### LPSC solid electrolyte surface slab
+
+```
+/n/holylabs/kozinsky_lab/Users/lsteinberger/systems/battery/
+  data/labeled/dec23_complete_dft/dataset.extxyz   7839 frames
+  analysis/graincluster/run_graincluster.py
+```
+
+Li₆PS₅Cl argyrodite solid electrolyte (species Li/P/S/Cl). The 228-atom frames
+are surface slabs: S/P/Cl framework occupies z ∈ [5, 40] Å; Li ions sit on both
+surfaces (z<5 and z>40 Å) and fill the interior.
+
+Run:
+```bash
+python run_graincluster.py --frame-index 0 --no-pbc-z
+```
+
+Expected (frame 0, alpha=0.1, cutoff=4.0, sigma=1.0):
+- Rank 0: ~138 atoms, S-dominant — bulk LPSC framework + interior Li
+- Rank 1: ~47 atoms, Li 98% — surface Li layer (one face)
+- Rank 2: ~42 atoms, Li 100% — surface Li layer (other face)
+- Total K ≈ 4
+
+`--no-pbc-z` required: z-periodic images bridge both surfaces and collapse K=1
+(which IS the correct MDL answer for a fully-periodic single-phase crystal).
+The surface Li detection is template-free — PTM cannot label Li-coordination
+environments.
+
+Key insight: 5.0 Å cutoff + full PBC → K=1 (all bonds connect to one component).
+4.0 Å cutoff + no-pbc-z → K=4 (surface Li layers statistically distinct from bulk).
+Singleton merge barrier (H_1edge ≈ 4.4 nats at M≈85) just overcomes long Li-Li bonds
+at 3.0–4.0 Å but NOT the shorter first-shell bonds → singletons near surface stay separate.
+
+## Recent Development (Jul 2026)
+
+### Bayesian Marginal Likelihood Replacement
+Replaced the plug-in N·H entropy estimator with the exact Bayesian marginal likelihood:
+
+```
+L_data(C) = log Γ(N + αM) − log Γ(αM) − Σ_i [log Γ(n_i + α) − log Γ(α)]
+```
+
+This is derived from integrating out the multinomial parameter θ under a Dirichlet(α) prior, giving the exact "mixture code" MDL length. The plug-in estimator N·H was an approximation that double-counted data (using data to estimate θ̂, then evaluating code length under θ̂). Key differences:
+- Correctly decomposes as E[−log P(n|θ)] + KL(posterior||prior)
+- Avoids overfitting penalty built-in via KL term
+- For concentrated clusters (small H), grows as log N (not linear)
+- Tests pass: 103/103
+
+Implementation in `entropy.py`:
+- `data_term()` and `data_term_from_counts()` use lgamma formulation
+- `self_information()` unchanged — still uses frozen posterior predictive (correct)
+- `cluster_entropy()` retained for reporting only (not used in objective)
+
+### Per-Pair Cutoffs
+Added `--pair-cutoffs` CLI option to exclude specific pair-type bonds beyond their cutoff:
+```bash
+python run_graincluster.py --pair-cutoffs C-C=2.0 C-Si=3.0
+```
+
+Useful for materials with distinct bonding regimes (e.g., graphene at 1.42 Å vs graphite second shell at 2.46 Å). Implemented in:
+- `builder.py`: per-pair filter in `build_edges()`
+- `run_graincluster.py`: command-line parsing and output stem tagging
+
+### Quantile Binning (CDF-based)
+Added `--bin-scheme quantile` and `--n-quantile-bins N` options.
+
+**Current state:** Quantile bins are frozen at percentile boundaries; prior is still uniform Dirichlet(α,...,α). This makes entropy "relative to the reference distribution shape" but does NOT encode prior belief that clusters should match the reference.
+
+**TODO:** Implement weighted Dirichlet prior Dirichlet(α·p_global) where p_global are empirical bin frequencies from the reference. This would actually encode "I expect clusters to look like the bulk."
+
+### SiC Melting Simulation Results
+
+**System:** 8000 atoms (4000 C, 4000 Si), frame 0 of a melting trajectory. Graphene column dissociating into Si-rich liquid.
+
+**Best result (linear binning + Bayesian L_Bayes + per-pair cutoffs):**
+- Configuration: `--init species --alpha 0.1 --beta 0.75 --gamma 0.0 --pair-cutoffs C-C=2.0`
+- K = 375 clusters (338 real + 1 other)
+- Rank 0: 5965 atoms, 1973 C + 3992 Si (bulk liquid SiC)
+- Rank 1: 995 C (majority of graphene bulk)
+- Remaining: 337 small clusters, mostly C at interfaces
+- Convergence: 20 rounds
+
+**Quantile binning result (50 bins per pair type):**
+- Same params as above but `--bin-scheme quantile`
+- K = 842 clusters (841 real + 1 other)
+- More fragmentation; uniform prior over quantiles does not penalize deviations from reference
+- Indicates that weighted prior is needed to match original intent
+
+**Open questions:**
+1. Graphene body (rank 1) remains fragmented into ~1275 fragments when using `--init merged` alone (no species pre-grouping), even with Bayesian L_Bayes. Root cause: topological isolation — interface atoms drain to "other"/"liquid", severing C-C cut-edge paths between graphene fragments.
+2. Per-pair cutoff C-C=2.0 essential for graphene detection (excludes second/third coordination shells at 2.46, 2.84 Å). Without it, graphene spreads across too many bins.
+3. Species init (`--init species`) provides a good starting point but C and Si still mix in the liquid; no automatic separation without entropy difference.
 
 ## Implementation Status
 

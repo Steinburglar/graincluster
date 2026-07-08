@@ -141,15 +141,42 @@ class TestClusterEntropy:
         expected = -(3/4 * math.log(3/4) + 1/4 * math.log(1/4))
         assert h == pytest.approx(expected, rel=1e-9)
 
-    def test_data_term_is_N_times_entropy(self):
+    def test_data_term_is_bayesian_marginal(self):
+        """data_term == -log P(n | alpha, M) via lgamma formula."""
+        from math import lgamma
         M = 6
+        alpha = 0.5
         c = ClusterState(cluster_id=0)
         for b in range(3):
             for _ in range(5):
                 c.add_edge(0, b)
-        h = cluster_entropy(c, M=M, alpha=0.5)
-        dt = data_term(c, M=M, alpha=0.5)
-        assert dt == pytest.approx(c.N * h, rel=1e-9)
+        # n = {bin0: 5, bin1: 5, bin2: 5}, N = 15
+        N = c.N
+        expected = lgamma(N + alpha * M) - lgamma(alpha * M)
+        expected -= sum(lgamma(cnt + alpha) - lgamma(alpha) for cnt in c.counts.values())
+        dt = data_term(c, M=M, alpha=alpha)
+        assert dt == pytest.approx(expected, rel=1e-9)
+
+    def test_data_term_zero_N(self):
+        """Empty cluster has code length 0."""
+        M = 6
+        c = ClusterState(cluster_id=0)
+        assert data_term(c, M=M, alpha=0.5) == 0.0
+
+    def test_data_term_zero_count_categories_ignored(self):
+        """Zero-count categories contribute 0 to L_Bayes (lgamma cancels)."""
+        from math import lgamma
+        M = 10
+        alpha = 0.5
+        # only 2 of 10 bins occupied
+        c = ClusterState(cluster_id=0)
+        c.add_edge(0, 0)
+        c.add_edge(0, 0)
+        c.add_edge(0, 1)
+        N = c.N
+        expected = lgamma(N + alpha * M) - lgamma(alpha * M)
+        expected -= sum(lgamma(cnt + alpha) - lgamma(alpha) for cnt in c.counts.values())
+        assert data_term(c, M=M, alpha=alpha) == pytest.approx(expected, rel=1e-9)
 
 
 class TestSelfInformation:
