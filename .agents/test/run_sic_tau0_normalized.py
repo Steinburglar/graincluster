@@ -100,11 +100,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-index", type=int, default=0)
     parser.add_argument("--beta", type=float, default=0.75)
     parser.add_argument("--gamma", type=float, default=0.0)
-    parser.add_argument(
-        "--structure-prior-mode",
-        choices=["edge_cut", "cluster_count"],
-        default="edge_cut",
-    )
     parser.add_argument("--cluster-count-prior-mean", type=float, default=None)
     parser.add_argument("--cluster-count-prior-strength", type=float, default=None)
     parser.add_argument("--tau-k", type=float, default=None)
@@ -181,7 +176,6 @@ def main() -> None:
         atom_species=symbols,
         gamma=gamma,
         beta=beta,
-        structure_prior_mode=args.structure_prior_mode,
         cluster_count_prior_mean=args.cluster_count_prior_mean,
         cluster_count_prior_strength=args.cluster_count_prior_strength,
         cluster_count_prior_tau=args.tau_k,
@@ -204,7 +198,6 @@ def main() -> None:
         partition,
         max_rounds=args.max_rounds,
         max_atom_passes=args.max_atom_passes,
-        exact_below_N=0,
     )
     print(
         f"Result rounds={result.n_rounds} atom_moves={result.n_atom_moves} "

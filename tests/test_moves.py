@@ -147,21 +147,14 @@ class TestScoreMove:
 
 class TestExactDelta:
     def test_exact_matches_frozen_for_large_clusters(self):
-        """For large clusters frozen and exact should agree closely."""
+        """Exact move delta stays finite on large clusters."""
         p = _simple_two_cluster_partition(n_per_cluster=8)
         atom = 0  # deep interior of cluster 0
-        delta_frozen = p.score_move(atom, 1, exact_below_N=0)
-        delta_exact = p.score_move(atom, 1, exact_below_N=100)
-        # For large N the approximation is close but not exact.
-        # They should at minimum agree in sign.
-        assert (delta_frozen > 0) == (delta_exact > 0)
+        delta_exact = p.score_move(atom, 1)
+        assert math.isfinite(delta_exact)
 
     def test_exact_corrects_last_edge_removal(self):
-        """Exact delta > frozen delta when removing last edge from small src.
-
-        With N_src=1, frozen underestimates entropy gain; exact should give
-        a more negative (better) score for the split.
-        """
+        """Removing the last edge from a small source yields a finite exact delta."""
         bs = make_bin_scheme(["A-A"], n_bins=20, lo=1.0, hi=5.0)
         # Two atoms, one edge — clusters {0} and {1}, one cut edge between them.
         from graincluster.graph.edge import EdgeRecord
@@ -173,10 +166,8 @@ class TestExactDelta:
 
         # Split atom 0 to a new singleton.
         new_cid = p.new_cluster_id()
-        delta_frozen = p.score_move(0, new_cid, exact_below_N=0)
-        delta_exact = p.score_move(0, new_cid, exact_below_N=10)
-        # Exact savings should be larger (more negative) than frozen.
-        assert delta_exact <= delta_frozen
+        delta_exact = p.score_move(0, new_cid)
+        assert math.isfinite(delta_exact)
 
     def test_exact_agrees_with_objective_after_apply(self):
         """exact score_move delta should match the actual objective change."""
@@ -194,7 +185,7 @@ class TestExactDelta:
         atom = n - 1  # bridge atom in cluster 0
         target = 1
         obj_before = p.objective()
-        delta_exact = p.score_move(atom, target, exact_below_N=1000)
+        delta_exact = p.score_move(atom, target)
         p.apply_move(atom, target)
         obj_after = p.objective()
         actual_delta = obj_after - obj_before
@@ -210,7 +201,7 @@ class TestExactDelta:
         p = partition_from_labels(labels, edges, bs, gamma=0.5, beta=1.0)
         # Both clusters are singletons (N=0).
         obj_before = p.objective()
-        delta_exact = p.score_move(0, 1, exact_below_N=1000)
+        delta_exact = p.score_move(0, 1)
         p.apply_move(0, 1)
         obj_after = p.objective()
         actual_delta = obj_after - obj_before
@@ -233,7 +224,6 @@ class TestExactDelta:
             bs,
             gamma=0.0,
             beta=1.0,
-            structure_prior_mode="cluster_count",
             cluster_count_prior_mean=2.0,
             cluster_count_prior_tau=-1.0,
         )
@@ -241,7 +231,7 @@ class TestExactDelta:
         atom = n - 1
         target = 1
         obj_before = p.objective()
-        delta_exact = p.score_move(atom, target, exact_below_N=1000)
+        delta_exact = p.score_move(atom, target)
         p.apply_move(atom, target)
         obj_after = p.objective()
         actual_delta = obj_after - obj_before
@@ -272,8 +262,33 @@ class TestExactDelta:
         atom = n - 1
         target = 1
         obj_before = p.objective()
-        delta_exact = p.score_move(atom, target, exact_below_N=1000)
+        delta_exact = p.score_move(atom, target)
         p.apply_move(atom, target)
+        obj_after = p.objective()
+        actual_delta = obj_after - obj_before
+        assert actual_delta == pytest.approx(delta_exact, abs=1e-9)
+
+    def test_exact_agrees_with_objective_when_move_splits_source(self):
+        """Exact score_move delta should include post-move source splitting."""
+        bs = make_bin_scheme(["A-A"], n_bins=10, lo=1.0, hi=5.0)
+        edges = [
+            EdgeRecord(i=0, j=1, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=2, cut_cost=1.0),
+            EdgeRecord(i=1, j=2, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=2, cut_cost=1.0),
+        ]
+        labels = np.array([0, 0, 0], dtype=int)
+        p = partition_from_labels(
+            labels,
+            edges,
+            bs,
+            cluster_count_prior_mean=1.0,
+            cluster_count_prior_tau=0.0,
+            cut_prior_beta0=1.0,
+        )
+
+        new_cid = p.new_cluster_id()
+        obj_before = p.objective()
+        delta_exact = p.score_move(1, new_cid)
+        p.apply_move(1, new_cid)
         obj_after = p.objective()
         actual_delta = obj_after - obj_before
         assert actual_delta == pytest.approx(delta_exact, abs=1e-9)

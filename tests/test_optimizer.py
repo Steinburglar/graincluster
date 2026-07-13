@@ -144,7 +144,6 @@ class TestConnectivitySplit:
 
     def test_connected_cluster_not_split(self):
         from graincluster.graph.edge import EdgeRecord
-        from graincluster.optimizer.greedy import _split_if_disconnected
         bs = make_bin_scheme(["A-A"], n_bins=4)
         edges = [
             EdgeRecord(i=0, j=1, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=1, cut_cost=2.0),
@@ -153,30 +152,25 @@ class TestConnectivitySplit:
         ]
         labels = np.zeros(3, dtype=int)
         p = partition_from_labels(labels, edges, bs)
-        n_new = _split_if_disconnected(p, 0)
+        n_new = p._split_cluster_if_disconnected(0)
         assert n_new == 0
         assert p.n_clusters() == 1
 
     def test_disconnected_cluster_splits(self):
         """Moving bridging atom disconnects the source cluster → split into 2."""
-        from graincluster.optimizer.greedy import _split_if_disconnected
         p = self._line_partition()
         # Remove bridge atom 1; cluster 0 becomes {0, 2, 3} — disconnected.
         p.apply_move(1, p.new_cluster_id())
-        n_new = _split_if_disconnected(p, 0)
-        assert n_new == 1
-        # 3 clusters: {1}, {0}, {2,3}
         assert p.n_clusters() == 3
+        # 3 clusters: {1}, {0}, {2,3}
         # Atoms 2 and 3 stay together; atom 0 is isolated.
         assert int(p.atom_labels[2]) == int(p.atom_labels[3])
         assert int(p.atom_labels[0]) != int(p.atom_labels[2])
 
     def test_edge_counts_correct_after_split(self):
         """After split: isolated {0} has N=0; component {2,3} has N=1."""
-        from graincluster.optimizer.greedy import _split_if_disconnected
         p = self._line_partition()
         p.apply_move(1, p.new_cluster_id())
-        _split_if_disconnected(p, 0)
         cid_0 = int(p.atom_labels[0])
         cid_2 = int(p.atom_labels[2])
         assert p.clusters[cid_0].N == 0
@@ -184,11 +178,9 @@ class TestConnectivitySplit:
 
     def test_objective_consistent_after_split(self):
         """partition.objective() is self-consistent after a connectivity split."""
-        from graincluster.optimizer.greedy import _split_if_disconnected
         import pytest as _pytest
         p = self._line_partition()
         p.apply_move(1, p.new_cluster_id())
-        _split_if_disconnected(p, 0)
         L_data = (1.0 - p.beta) * sum(p._cluster_data_term(c) for c in p.clusters.values())
         L_cut = p.beta * sum(
             e.cut_cost for e in p.edges if p.atom_labels[e.i] != p.atom_labels[e.j]

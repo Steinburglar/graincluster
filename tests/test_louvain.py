@@ -118,7 +118,6 @@ class TestScoreClusterMerge:
 
     def test_score_matches_actual_objective_change_cluster_count_prior(self):
         p = _two_identical_clusters(beta=1.0, gamma=0.0)
-        p.structure_prior_mode = "cluster_count"
         p.cluster_count_prior_mean = 1.0
         p.cluster_count_prior_tau = -1.0
         obj_before = p.objective()
@@ -222,6 +221,25 @@ class TestClusterMergeSweep:
         p = partition_from_labels(labels, edges, bs)
         n = cluster_merge_sweep(p)
         assert n == 0
+
+    def test_can_absorb_real_cluster_into_other(self):
+        """Merge sweep may absorb a real cluster into OTHER_ID when favorable."""
+        bs = make_bin_scheme(["A-A"], n_bins=10, lo=1.0, hi=5.0)
+        edges = [
+            EdgeRecord(i=0, j=1, pair_key="A-A", pair_type_idx=0, raw_value=2.0, bin_idx=2, cut_cost=1.0),
+        ]
+        labels = np.array([0, -1], dtype=int)
+        p = partition_from_labels(
+            labels,
+            edges,
+            bs,
+            cluster_count_prior_mean=1.0,
+            cluster_count_prior_tau=5.0,
+            cut_prior_beta0=1.0,
+        )
+        n = cluster_merge_sweep(p)
+        assert n == 1
+        assert p.n_clusters() == 0
 
 
 # ---------------------------------------------------------------------------

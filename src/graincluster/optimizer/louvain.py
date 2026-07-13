@@ -53,18 +53,21 @@ def cluster_merge_sweep(
     for cid_a, cid_b in pairs:
         if cid_a not in partition.clusters or cid_b not in partition.clusters:
             continue
-        # Never merge OTHER_ID with a real cluster.
-        if cid_a == OTHER_ID or cid_b == OTHER_ID:
-            continue
         delta = partition.score_cluster_merge(cid_a, cid_b)
         if delta < tol:
-            # Absorb the smaller cluster into the larger for efficiency.
-            ca = partition.clusters[cid_a]
-            cb = partition.clusters[cid_b]
-            if len(ca.atom_ids) <= len(cb.atom_ids):
-                partition.apply_cluster_merge(src_cid=cid_a, tgt_cid=cid_b)
+            if cid_a == OTHER_ID or cid_b == OTHER_ID:
+                # Allow only real-cluster absorption into OTHER_ID.
+                src_cid = cid_b if cid_a == OTHER_ID else cid_a
+                tgt_cid = OTHER_ID
+                partition.apply_cluster_merge(src_cid=src_cid, tgt_cid=tgt_cid)
             else:
-                partition.apply_cluster_merge(src_cid=cid_b, tgt_cid=cid_a)
+                # Absorb the smaller cluster into the larger for efficiency.
+                ca = partition.clusters[cid_a]
+                cb = partition.clusters[cid_b]
+                if len(ca.atom_ids) <= len(cb.atom_ids):
+                    partition.apply_cluster_merge(src_cid=cid_a, tgt_cid=cid_b)
+                else:
+                    partition.apply_cluster_merge(src_cid=cid_b, tgt_cid=cid_a)
             n_merged += 1
 
     return n_merged
@@ -75,7 +78,6 @@ def louvain_optimize(
     max_rounds: int = 20,
     max_atom_passes: int = 100,
     allow_splits: bool = True,
-    exact_below_N: int = 10,
     tol: float = -1e-10,
 ) -> LouvainResult:
     """Louvain-style optimization (in-place).
@@ -96,8 +98,6 @@ def louvain_optimize(
         Max passes per atom-level greedy sweep.
     allow_splits:
         Passed to greedy_optimize.
-    exact_below_N:
-        Exact delta for small clusters; passed to greedy_optimize.
     tol:
         Accept threshold for both phases.
     """
@@ -110,7 +110,6 @@ def louvain_optimize(
             partition,
             max_passes=max_atom_passes,
             allow_splits=allow_splits,
-            exact_below_N=exact_below_N,
             tol=tol,
         )
         total_atom_moves += atom_result.n_moves
