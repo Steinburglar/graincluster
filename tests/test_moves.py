@@ -168,7 +168,7 @@ class TestExactDelta:
         edges = [EdgeRecord(i=0, j=1, pair_key="A-A", pair_type_idx=0,
                             raw_value=2.5, bin_idx=9, cut_cost=3.125)]
         labels = np.array([0, 0], dtype=int)  # both in cluster 0, one internal edge
-        p = partition_from_labels(labels, edges, bs, gamma=0.0, beta=0.0)
+        p = partition_from_labels(labels, edges, bs, gamma=150.0, beta=0.0)
         assert p.clusters[0].N == 1
 
         # Split atom 0 to a new singleton.
@@ -216,11 +216,73 @@ class TestExactDelta:
         actual_delta = obj_after - obj_before
         assert actual_delta == pytest.approx(delta_exact, abs=1e-9)
 
+    def test_exact_agrees_with_objective_cluster_count_prior(self):
+        """Exact score_move delta should match objective under cluster-count prior."""
+        n = 4
+        bs = make_bin_scheme(["A-A"], n_bins=10, lo=1.0, hi=5.0)
+        edges = make_two_domain_edges(
+            n_a=n, n_b=n,
+            pair_key="A-A", pair_type_idx=0,
+            raw_a=2.0, raw_b=4.0, bridge_raw=3.0,
+            bin_scheme=bs,
+        )
+        labels = np.array([0] * n + [1] * n, dtype=int)
+        p = partition_from_labels(
+            labels,
+            edges,
+            bs,
+            gamma=0.0,
+            beta=1.0,
+            structure_prior_mode="cluster_count",
+            cluster_count_prior_mean=2.0,
+            cluster_count_prior_tau=-1.0,
+        )
+
+        atom = n - 1
+        target = 1
+        obj_before = p.objective()
+        delta_exact = p.score_move(atom, target, exact_below_N=1000)
+        p.apply_move(atom, target)
+        obj_after = p.objective()
+        actual_delta = obj_after - obj_before
+        assert actual_delta == pytest.approx(delta_exact, abs=1e-9)
+
+    def test_exact_agrees_with_objective_cluster_count_plus_cut_prior(self):
+        """Exact score_move delta should match objective with additive new priors."""
+        n = 4
+        bs = make_bin_scheme(["A-A"], n_bins=10, lo=1.0, hi=5.0)
+        edges = make_two_domain_edges(
+            n_a=n, n_b=n,
+            pair_key="A-A", pair_type_idx=0,
+            raw_a=2.0, raw_b=4.0, bridge_raw=3.0,
+            bin_scheme=bs,
+        )
+        labels = np.array([0] * n + [1] * n, dtype=int)
+        p = partition_from_labels(
+            labels,
+            edges,
+            bs,
+            gamma=0.0,
+            beta=1.0,
+            cluster_count_prior_mean=2.0,
+            cluster_count_prior_tau=-1.0,
+            cut_prior_beta0=1.0,
+        )
+
+        atom = n - 1
+        target = 1
+        obj_before = p.objective()
+        delta_exact = p.score_move(atom, target, exact_below_N=1000)
+        p.apply_move(atom, target)
+        obj_after = p.objective()
+        actual_delta = obj_after - obj_before
+        assert actual_delta == pytest.approx(delta_exact, abs=1e-9)
+
 
 class TestObjectiveConsistency:
-    def test_objective_nonnegative(self):
+    def test_objective_finite(self):
         p = _simple_two_cluster_partition()
-        assert p.objective() >= 0.0
+        assert np.isfinite(p.objective())
 
     def test_objective_decreases_on_good_move(self):
         """Merging two identical domains should reduce or hold objective."""
@@ -233,14 +295,13 @@ class TestObjectiveConsistency:
             bin_scheme=bs,
         )
         labels = np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=int)
-        p = partition_from_labels(labels, edges, bs, gamma=0.0, beta=0.0)
+        p = partition_from_labels(labels, edges, bs, gamma=150.0, beta=0.0)
         obj_sep = p.objective()
         # Force merge by moving all cluster-1 atoms into cluster 0.
         for atom in range(4, 8):
             p.apply_move(atom, 0)
         obj_merged = p.objective()
-        # Merged cluster has lower entropy (same distribution, fewer zero-count categories
-        # after smoothing) or equal. Combined data term should not be worse.
+        # Merged cluster removes one explicit cluster identity and its gamma cost.
         assert obj_merged <= obj_sep + 1e-9
 
     def test_partition_from_labels_counts_correct(self):

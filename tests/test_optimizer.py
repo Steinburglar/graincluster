@@ -68,7 +68,7 @@ class TestGreedyOptimizer:
             bin_scheme=bs,
         )
         labels = np.array([0] * 4 + [1] * 4, dtype=int)
-        p = partition_from_labels(labels, edges, bs, gamma=10.0, beta=0.5, alpha=0.5)
+        p = partition_from_labels(labels, edges, bs, gamma=150.0, beta=0.5, alpha=0.5)
         louvain_optimize(p, allow_splits=False)
         assert p.n_clusters() == 1
 
@@ -185,13 +185,11 @@ class TestConnectivitySplit:
     def test_objective_consistent_after_split(self):
         """partition.objective() is self-consistent after a connectivity split."""
         from graincluster.optimizer.greedy import _split_if_disconnected
-        from graincluster.model.entropy import data_term
         import pytest as _pytest
         p = self._line_partition()
         p.apply_move(1, p.new_cluster_id())
         _split_if_disconnected(p, 0)
-        M = p._M
-        L_data = (1.0 - p.beta) * sum(data_term(c, M, p.alpha) for c in p.clusters.values())
+        L_data = (1.0 - p.beta) * sum(p._cluster_data_term(c) for c in p.clusters.values())
         L_cut = p.beta * sum(
             e.cut_cost for e in p.edges if p.atom_labels[e.i] != p.atom_labels[e.j]
         )

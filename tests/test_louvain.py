@@ -68,7 +68,7 @@ def _identical_clusters_cut_blocked(n=6):
     )
     labels = np.array([0] * n + [1] * n, dtype=int)
     return partition_from_labels(
-        labels, edges, bs, alpha=0.5, gamma=0.5, beta=0.9
+        labels, edges, bs, alpha=0.5, gamma=100.0, beta=0.9
     )
 
 
@@ -83,8 +83,8 @@ class TestScoreClusterMerge:
         assert isinstance(delta, float)
 
     def test_identical_clusters_merge_is_favorable(self):
-        """Same distribution, no cut penalty → merge should have ΔL < 0."""
-        p = _two_identical_clusters(beta=0.0, gamma=0.0)
+        """Same distribution plus cluster penalty → merge should have ΔL < 0."""
+        p = _two_identical_clusters(beta=0.0, gamma=150.0)
         delta = p.score_cluster_merge(0, 1)
         assert delta < 0.0
 
@@ -110,6 +110,17 @@ class TestScoreClusterMerge:
 
     def test_score_matches_actual_objective_change_distinct(self):
         p = _two_distinct_clusters(beta=1.0, gamma=0.5)
+        obj_before = p.objective()
+        delta_scored = p.score_cluster_merge(0, 1)
+        p.apply_cluster_merge(src_cid=0, tgt_cid=1)
+        obj_after = p.objective()
+        assert obj_after - obj_before == pytest.approx(delta_scored, abs=1e-9)
+
+    def test_score_matches_actual_objective_change_cluster_count_prior(self):
+        p = _two_identical_clusters(beta=1.0, gamma=0.0)
+        p.structure_prior_mode = "cluster_count"
+        p.cluster_count_prior_mean = 1.0
+        p.cluster_count_prior_tau = -1.0
         obj_before = p.objective()
         delta_scored = p.score_cluster_merge(0, 1)
         p.apply_cluster_merge(src_cid=0, tgt_cid=1)
@@ -160,10 +171,8 @@ class TestApplyClusterMerge:
         """Partition objective after apply_cluster_merge is self-consistent."""
         p = _two_identical_clusters()
         p.apply_cluster_merge(src_cid=0, tgt_cid=1)
-        # Recompute from scratch and compare.
-        from graincluster.model.entropy import data_term as dt
-        M = p._M
-        L_data = (1.0 - p.beta) * sum(dt(c, M, p.alpha) for c in p.clusters.values())
+        # Recompute parameterized objective from scratch and compare.
+        L_data = (1.0 - p.beta) * sum(p._cluster_data_term(c) for c in p.clusters.values())
         K = p.n_clusters()
         L_cut = p.beta * sum(
             e.cut_cost
@@ -185,8 +194,8 @@ class TestClusterMergeSweep:
         assert isinstance(n, int)
 
     def test_identical_clusters_merged_in_one_sweep(self):
-        """Two identical clusters with no cut penalty → merged in one sweep."""
-        p = _two_identical_clusters(beta=0.0, gamma=0.0)
+        """Two identical clusters with enough cluster penalty → merged in one sweep."""
+        p = _two_identical_clusters(beta=0.0, gamma=150.0)
         n = cluster_merge_sweep(p)
         assert n == 1
         assert p.n_clusters() == 1
@@ -262,7 +271,9 @@ class TestLouvainOptimize:
         """Entropy-dominated regime: Louvain does not merge distinct clusters."""
         p = _two_distinct_clusters()
         louvain_optimize(p)
-        assert p.n_clusters() == 2
+        left_label = int(p.atom_labels[0])
+        right_label = int(p.atom_labels[-1])
+        assert left_label != right_label
 
     def test_singleton_init_converges(self):
         """All-singleton start → Louvain finds compact solution."""

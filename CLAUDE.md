@@ -17,30 +17,46 @@ The objective, data model, and optimization backend are all different.
 graphcluster uses leidenalg with preset objectives; graincluster implements
 its own Louvain-style optimizer against the MDL objective.
 
-## Objective (Updated: Bayesian Marginal Likelihood)
+## Objective (Updated Target: Parameterized MAP Model)
 
 ```
 L = (1 − β) · Σ_C L_data(C) + β · Σ_cut s_ij + γ · K
 ```
 
-where `L_data(C)` is the Bayesian marginal code length:
+where `L_data(C)` should be the parameterized MAP data cost:
 
 ```
-L_data(C) = log Γ(N + αM) − log Γ(αM) − Σ_i [log Γ(n_i + α) − log Γ(α)]
+L_data(C) =
+    L_species(C, θ_species,C)
+  + Σ_t L_edge_bins(C, t, θ_edge,C,t)
 ```
 
-- `L_data(C)`: exact MDL "mixture code" length for cluster C's edges under Dirichlet(α) prior
-- `N`: total internal edges, `M`: total (pair_type, bin) categories, `α`: Dirichlet concentration
-- `n_i`: count of edges in category i; automatically accounts for zero-count bins
+- `θ_species,C`: cluster-specific multinomial over atom species
+- `θ_edge,C,t`: cluster-specific multinomial over edge bins for induced pair type `t`
+- `L_species`: multinomial data cost plus Dirichlet prior cost for species parameters
+- `L_edge_bins`: multinomial data cost plus Dirichlet prior cost for pair-type-conditional edge parameters
 - `K`: number of clusters (model-complexity penalty)
 - `s_ij = d^2 / (2σ²)`: cut cost for boundary edge (i,j)
 - `β ∈ [0,1]`: entropy/cut balance weight
 
-**Differences from prior N·H formulation:**
-- L_data is the marginal likelihood (integrating out θ), not a plug-in entropy estimate
-- Avoids double-counting: doesn't estimate θ from data then pretend θ is known
-- Automatically encodes Occam's razor: includes KL divergence cost of learning distribution from data
-- Converges correctly for large N (BIC-like term, not linear in N for concentrated clusters)
+**Important correction (Jul 2026):**
+- The old Bayesian marginal likelihood is no longer the target model.
+- Marginal likelihood makes all clusters share one universal prior-predictive identity.
+- Target science needs clusters with explicit identities: composition plus edge-bin signatures.
+- Pair type is induced by endpoint atom species, not generated independently per edge.
+- Use constrained MAP parameters during optimization:
+
+```
+θ_hat_i >= ε, sum_i θ_hat_i = 1
+```
+
+Old marginalized baseline still exists in code:
+
+```
+L_Bayes(C) = log Γ(N + αM) − log Γ(αM) − Σ_i [log Γ(n_i + α) − log Γ(α)]
+```
+
+Treat it as stale implementation until `parameterized_model_plan.md` is implemented.
 
 ## Binning Schemes (Linear and Quantile)
 
@@ -54,20 +70,19 @@ L_data(C) = log Γ(N + αM) − log Γ(αM) − Σ_i [log Γ(n_i + α) − log �
 - `fit_bin_scheme_quantile(pair_values, n_bins=50)` — equal-population bins
 - Each bin contains ~1/n_bins fraction of reference data
 - Bins frozen at reference quantiles; never updated during clustering
-- Prior: currently Dirichlet(α,...,α) — uniform over quantiles
-  - **TODO**: implement weighted prior Dirichlet(α·p_global) to encode expected distribution
-- Entropy becomes relative to reference distribution structure
+- Target prior: Dirichlet with uniform base over quantile bins per pair type
+- One `κ_edge` shared across pair types initially
+- Uniform in quantile space means global real-space edge distribution conditional on pair type
 
 Per-pair cutoffs (`--pair-cutoffs C-C=2.0`) are applied before binning; edges beyond the pair-specific cutoff are excluded.
 
 ## Scientific Invariants
 
-- **Species-pair identity is part of the information model** — joint entropy
-  over (pair_type_idx, bin_idx), not pooled
-- **Cluster-level normalization** over total internal edge mass, not per pair
-  type — keeps species mixing in the cost
+- **Atom species are vertex-level observations** — model species counts per cluster
+- **Pair type is deterministic** from endpoint species; do not generate edge type independently
+- **Edge bins are conditional on pair type** — separate edge-bin multinomial per pair type
 - **Boundary penalty separate from entropy term**
-- **Bayesian marginal likelihood** (not plug-in N·H) — provides correct MDL code length
+- **Parameterized MAP objective** — cluster identity parameters are explicit
 - **Frozen empirical model for move scoring** — move deltas use pre-move
   cluster states; counts updated only after acceptance. Exact path used
   for small clusters (N < exact_below_N=10 by default).
@@ -392,22 +407,47 @@ Key insight: 5.0 Å cutoff + full PBC → K=1 (all bonds connect to one componen
 Singleton merge barrier (H_1edge ≈ 4.4 nats at M≈85) just overcomes long Li-Li bonds
 at 3.0–4.0 Å but NOT the shorter first-shell bonds → singletons near surface stay separate.
 
-## Recent Development (Jul 2026)
+## Recent Development / Baseline History (Jul 2026)
 
-### Bayesian Marginal Likelihood Replacement
+### Parameterized MAP Target Model
+
+The current target is no longer the Bayesian marginal likelihood model. The
+target is a parameterized MAP/two-part MDL model where each cluster has
+explicit identity parameters:
+
+```
+θ_species,C
+θ_edge,C,t
+```
+
+Use:
+
+```
+θ_hat_i = (n_i + α_i) / (N + α_0)
+```
+
+as the cluster-specific parameter estimate during optimization. Priors:
+
+- Species: `α_species_s = κ_species * global_atom_fraction_s`
+- Edge bins: `α_edge_t,b = κ_edge / B_t`
+
+See `parameterized_model_plan.md`. Implement this before further tuning of
+quantile priors or SiC fragmentation behavior.
+
+### Old Bayesian Marginal Likelihood Baseline
 Replaced the plug-in N·H entropy estimator with the exact Bayesian marginal likelihood:
 
 ```
 L_data(C) = log Γ(N + αM) − log Γ(αM) − Σ_i [log Γ(n_i + α) − log Γ(α)]
 ```
 
-This is derived from integrating out the multinomial parameter θ under a Dirichlet(α) prior, giving the exact "mixture code" MDL length. The plug-in estimator N·H was an approximation that double-counted data (using data to estimate θ̂, then evaluating code length under θ̂). Key differences:
+This was derived from integrating out the multinomial parameter θ under a Dirichlet(α) prior, giving the exact "mixture code" MDL length. It is now considered a baseline/stale implementation because it removes explicit cluster identities. Historical key differences:
 - Correctly decomposes as E[−log P(n|θ)] + KL(posterior||prior)
 - Avoids overfitting penalty built-in via KL term
 - For concentrated clusters (small H), grows as log N (not linear)
 - Tests pass: 103/103
 
-Implementation in `entropy.py`:
+Baseline implementation in `entropy.py`:
 - `data_term()` and `data_term_from_counts()` use lgamma formulation
 - `self_information()` unchanged — still uses frozen posterior predictive (correct)
 - `cluster_entropy()` retained for reporting only (not used in objective)
@@ -427,13 +467,15 @@ Added `--bin-scheme quantile` and `--n-quantile-bins N` options.
 
 **Current state:** Quantile bins are frozen at percentile boundaries; prior is still uniform Dirichlet(α,...,α). This makes entropy "relative to the reference distribution shape" but does NOT encode prior belief that clusters should match the reference.
 
-**TODO:** Implement weighted Dirichlet prior Dirichlet(α·p_global) where p_global are empirical bin frequencies from the reference. This would actually encode "I expect clusters to look like the bulk."
+**Deprecated TODO:** Do not implement joint weighted
+`Dirichlet(α·p_global)` over `(pair_type, bin)`. New target uses atom-species
+Dirichlet plus per-pair edge-bin Dirichlet with explicit cluster parameters.
 
 ### SiC Melting Simulation Results
 
 **System:** 8000 atoms (4000 C, 4000 Si), frame 0 of a melting trajectory. Graphene column dissociating into Si-rich liquid.
 
-**Best result (linear binning + Bayesian L_Bayes + per-pair cutoffs):**
+**Best old baseline result (linear binning + Bayesian L_Bayes + per-pair cutoffs):**
 - Configuration: `--init species --alpha 0.1 --beta 0.75 --gamma 0.0 --pair-cutoffs C-C=2.0`
 - K = 375 clusters (338 real + 1 other)
 - Rank 0: 5965 atoms, 1973 C + 3992 Si (bulk liquid SiC)
@@ -444,8 +486,8 @@ Added `--bin-scheme quantile` and `--n-quantile-bins N` options.
 **Quantile binning result (50 bins per pair type):**
 - Same params as above but `--bin-scheme quantile`
 - K = 842 clusters (841 real + 1 other)
-- More fragmentation; uniform prior over quantiles does not penalize deviations from reference
-- Indicates that weighted prior is needed to match original intent
+- More fragmentation under the old marginalized objective
+- Do not infer final behavior until parameterized MAP model is implemented
 
 **Open questions:**
 1. Graphene body (rank 1) remains fragmented into ~1275 fragments when using `--init merged` alone (no species pre-grouping), even with Bayesian L_Bayes. Root cause: topological isolation — interface atoms drain to "other"/"liquid", severing C-C cut-edge paths between graphene fragments.

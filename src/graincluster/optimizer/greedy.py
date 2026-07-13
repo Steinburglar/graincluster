@@ -74,6 +74,9 @@ def _split_if_disconnected(partition: Partition, cluster_id: int) -> int:
         for atom in small_comp:
             partition.atom_labels[atom] = new_cid
             c.atom_ids.discard(atom)
+            species_idx = int(partition.atom_species_idx[atom])
+            c.remove_atom_species(species_idx)
+            new_c.add_atom_species(species_idx)
 
         # Scan edges from this component; process each edge index exactly once.
         seen_eidx: set[int] = set()

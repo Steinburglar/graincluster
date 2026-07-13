@@ -98,8 +98,8 @@ class TestInterfaceDetection:
         labels = np.zeros(2 * n, dtype=int)
         p = partition_from_labels(labels, edges, bs, alpha=0.5, gamma=0.1, beta=0.0)
         result = greedy_optimize(p, max_passes=50)
-        # Should split into at least 2 clusters (the two phases).
-        assert p.n_clusters() >= 2
+        # Should split into at least 2 labels (OTHER_ID can hold one phase).
+        assert len(set(p.atom_labels.tolist())) >= 2
 
     def test_single_phase_stays_merged(self):
         """Uniform edge distribution → starting merged should stay merged."""

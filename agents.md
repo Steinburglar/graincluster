@@ -12,17 +12,102 @@ MDL-style graph partitioning engine for atomistic simulations. Finds contiguous 
 L = (1 − β) · Σ_C L_data(C) + β · Σ_cut s_ij + γ · K
 ```
 
-- `L_data(C)` = Bayesian marginal likelihood (lgamma formulation, see below)
+- `L_data(C)` = target parameterized MAP data cost, see below
 - `β` = entropy/cut balance (typically 0.5–0.9)
 - `γ` = cluster count penalty (typically 0, set via `--gamma`)
 - `s_ij` = cut cost per boundary edge (depends on distance and σ)
 
-**L_data(C)** is exact Dirichlet-Multinomial mixture code:
+### Current Target Model
+
+Target model is **not** Bayesian marginal likelihood. Marginal likelihood
+integrates out all cluster parameters:
+
+```
+P(D | M) = Π_C ∫ P(D_C | θ_C) P(θ_C) dθ_C
+```
+
+This is valid math but wrong semantics for this project: every cluster has the
+same identity under the generative model, and self-consistent phases are only
+rewarded if they have high universal prior-predictive probability.
+
+Target model is parameterized MAP:
+
+```
+P(D, θ | M) = P(D | θ, M) P(θ | M)
+```
+
+Each cluster has explicit identity parameters:
+
+```
+θ_species,C  = multinomial over atom species
+θ_edge,C,t   = multinomial over edge bins for induced pair type t
+```
+
+Cluster data term:
+
+```
+L_data(C) =
+    -log P(species_C | θ_species,C) - log P(θ_species,C)
+  + Σ_t [-log P(edge_bins_C,t | θ_edge,C,t) - log P(θ_edge,C,t)]
+```
+
+Pair type is deterministic from endpoint species. Do not treat edge pair type
+as an independent edge observation.
+
+### Priors
+
+Use Dirichlet priors:
+
+```
+α_i = κ · base_i
+```
+
+Species:
+
+```
+base_species_s = global atom fraction of species s
+α_species_s = κ_species · base_species_s
+```
+
+Edge bins:
+
+```
+base_edge_t,b = 1 / B_t
+α_edge_t,b = κ_edge / B_t
+```
+
+There is one edge-bin Dirichlet per pair type, but all pair types share
+`κ_edge` initially. Quantile bins make uniform edge-bin base correspond to the
+global real-space edge-length distribution conditional on pair type.
+
+Use constrained MAP for `θ` during optimization:
+
+```
+θ_hat_i >= ε
+sum_i θ_hat_i = 1
+```
+
+Positive effective weights `n_i + α_i - 1` share non-floor mass. Nonpositive
+weights sit at `ε`. Posterior mean remains available as optional diagnostic.
+
+MAP caveat: high `κ` shrinks `θ_hat` toward the base distribution but does not
+guarantee mixed/broad finite data have lower profiled cost than pure/narrow
+data. It reduces the sparse-data advantage.
+
+Detailed implementation plan:
+
+- `parameterized_model_plan.md`
+
+### Current Code Caveat
+
+Current implementation still uses old marginalized Dirichlet-multinomial edge
+code:
+
 ```
 L_data(C) = log Γ(N + αM) − log Γ(αM) − Σ_i [log Γ(n_i + α) − log Γ(α)]
 ```
 
-This is NOT the old N·H entropy. It integrates out the multinomial parameter θ, automatically encoding Occam's razor (cost of learning the distribution from data). For concentrated clusters, grows as log N, not linear in N.
+Treat this as baseline/stale implementation, not target science.
 
 ## Key Data Structures
 
@@ -36,12 +121,13 @@ This is NOT the old N·H entropy. It integrates out the multinomial parameter θ
 **ClusterState** (`model/cluster.py`):
 - `counts[(pair_type_idx, bin_idx)]` = edge count in each category
 - `N` = total internal edges
+- target model must also track atom-species counts
 - Methods: `add_edge()`, `remove_edge()`
 
 **BinScheme** (`features/binning.py`):
 - Fixed per-pair-type binning, frozen at initialization
 - Two options: linear (Freedman-Diaconis) or quantile (CDF-based)
-- Prior: currently Dirichlet(α,...,α) uniform over bins
+- Target edge prior: Dirichlet with uniform base over pair-type-specific bins
 
 ## Optimizer
 
@@ -67,7 +153,8 @@ Raw-space bins with width h = 2·IQR·N^(-1/3). Prior: uniform over bins.
 ```bash
 --bin-scheme quantile --n-quantile-bins 50
 ```
-Equal-population bins, frozen at percentiles. Prior: currently uniform (TODO: weighted).
+Equal-population bins, frozen at percentiles. Target prior: uniform base over
+quantile bins per pair type, with shared `κ_edge`.
 
 **Per-pair cutoffs**:
 ```bash
@@ -93,7 +180,8 @@ src/graincluster/
     binning.py           fit_bin_scheme(), fit_bin_scheme_quantile()
     species.py           canonical_pair_key()
   model/
-    entropy.py           data_term() — Bayesian marginal likelihood (lgamma)
+    entropy.py           old marginalized baseline data term (lgamma)
+    parameterized.py     target parameterized MAP scoring (to add)
     partition.py         Partition class, score_move(), apply_move(), objective()
     cluster.py           ClusterState — mutable edge count tables
   optimizer/
@@ -135,25 +223,27 @@ Current: 103/103 pass.
 ## Known Issues & Open Problems
 
 ### Graphene Fragmentation in SiC
-Best result: species init + Bayesian L_Bayes + C-C=2.0 cutoff gives K=375 clusters, with one large graphene cluster (995 C) and many smaller fragments (rank 2+).
+Old baseline result: species init + Bayesian `L_Bayes` + C-C=2.0 cutoff gives K=375 clusters, with one large graphene cluster (995 C) and many smaller fragments (rank 2+).
 
 With `--init merged`, get K=1275 fragments instead. Root cause: interface C atoms drain to "other"/"liquid", cutting off C-C paths between graphene fragments. Cluster-merge sweep can't reconnect them (no cross-edges to propose merges).
 
 **Not a bug in move scoring.** A topological issue: the objective is doing what it's designed to do — finding disconnected regions.
 
 ### Quantile Binning Over-Fragments
-`--bin-scheme quantile` gives K=842 vs K=375 for linear. Reason: uniform Dirichlet(α,...,α) over quantiles does not penalize deviations from reference distribution.
+Old baseline: `--bin-scheme quantile` gives K=842 vs K=375 for linear under the marginalized edge model.
 
-**TODO**: Implement weighted prior Dirichlet(α·p_global) where p_global are empirical bin frequencies in the reference. This would encode "clusters should match the bulk distribution" and reduce fragmentation.
+**Old TODO deprecated.** Do not implement joint weighted prior
+`Dirichlet(α·p_global)` over `(pair_type, bin)`. New target is atom-species
+Dirichlet plus per-pair edge-bin Dirichlet, with explicit cluster parameters.
 
 ### Mixed-Phase Entropy
 In SiC, rank 0 (bulk liquid SiC) is 1973 C + 3992 Si. No automatic species separation in the liquid because C and Si have overlapping bond distributions.
 
-Consistent with MDL: mixed phases have high entropy regardless of species. Species identity is in the edge type, not the atom label.
+Old model explanation: species identity was in edge type, not atom label. Target model changes this: species identity is atom-level and charged through species counts.
 
 ## Recent Changes (Jul 2026)
 
-1. **Bayesian marginal likelihood** — replaced N·H with exact lgamma formulation
+1. **Parameterized MAP target selected** — replace marginalized edge model with explicit cluster identities
 2. **Per-pair cutoffs** — `--pair-cutoffs C-C=2.0` support
 3. **Quantile binning** — `--bin-scheme quantile` added
 4. **OTHER_ID cluster** — permanent background implemented
@@ -162,14 +252,14 @@ Consistent with MDL: mixed phases have high entropy regardless of species. Speci
 ## Constraints to Respect
 
 - **Partition mutations**: only use `apply_move()` and `apply_cluster_merge()` — they maintain consistency
-- **Move scoring**: frozen model — uses pre-move cluster states, counts updated only after acceptance
-- **Exact path**: small clusters (N < exact_below_N) use exact entropy computation, not frozen model
+- **Move scoring migration**: implement exact local recompute first for the parameterized model; optimize later
+- **Old exact path**: small clusters (N < exact_below_N) use exact old entropy computation, not frozen model
 - **Bin schemes**: frozen at fit time, never updated during optimization
-- **Alpha behavior**: larger α lowers merge barrier but also weakens entropy signal for concentrated clusters
+- **Kappa behavior**: `κ_species` and `κ_edge` control Dirichlet shape; below category count favors sparse/corner distributions
 
 ## Next Steps for Agents
 
-1. **Weighted Dirichlet prior** — modify `fit_bin_scheme_quantile()` and entropy computations to use Dirichlet(α·p_global)
+1. **Parameterized MAP model** — implement `parameterized_model_plan.md`
 2. **Graphene fragmentation** — investigate topological reconnection strategies (post-hoc merging, "other"-bridged merging)
 3. **Streaming trajectory** — process multiple frames in sequence
 4. **Per-phase priors** — detect phase type and use phase-specific prior (crystal vs liquid)
