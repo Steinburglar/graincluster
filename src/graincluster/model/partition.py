@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -52,6 +53,7 @@ class Partition:
     alpha_edge_by_type: dict[int, np.ndarray] | None = None
     parameter_estimator: str = "constrained_map"
     estimator_epsilon: float = 1e-12
+    profiler: Any = field(default=None, repr=False, compare=False)
     _M: int = field(init=False, repr=False)
     _next_cluster_id: int = field(init=False, repr=False)
     # adjacency index: atom -> list of edge indices
@@ -208,6 +210,17 @@ class Partition:
 
         Does NOT mutate partition.
         """
+        profiler = self.profiler
+        if profiler is None:
+            return self._score_move_impl(atom, target_cluster_id)
+        with profiler.time_block("score_move"):
+            return self._score_move_impl(atom, target_cluster_id)
+
+    def _score_move_impl(
+        self,
+        atom: int,
+        target_cluster_id: int,
+    ) -> float:
         src_id = int(self.atom_labels[atom])
         if src_id == target_cluster_id:
             return 0.0
@@ -227,10 +240,6 @@ class Partition:
         else:
             delta_data = self._exact_data_delta(atom, src_id, target_cluster_id)
 
-        # --- cluster count delta ---
-        # OTHER_ID never counts toward K (free background), so:
-        #   - src OTHER_ID emptying: no delta_K (other persists, was never in K)
-        #   - tgt OTHER_ID: never "new" (always exists, not in K), no delta_K
         src_becomes_empty = len(source_after) == 0 and src_id != OTHER_ID
         delta_K = 0
         if tgt_is_new:
@@ -283,6 +292,19 @@ class Partition:
         target_cluster_id: int,
         source_after: list[tuple[dict[int, int], dict[tuple[int, int], int], set[int]]] | None = None,
     ) -> float:
+        profiler = self.profiler
+        if profiler is not None:
+            with profiler.time_block("cut_cost_delta_for_move"):
+                return self._cut_cost_delta_for_move_impl(atom, src_id, target_cluster_id, source_after)
+        return self._cut_cost_delta_for_move_impl(atom, src_id, target_cluster_id, source_after)
+
+    def _cut_cost_delta_for_move_impl(
+        self,
+        atom: int,
+        src_id: int,
+        target_cluster_id: int,
+        source_after: list[tuple[dict[int, int], dict[tuple[int, int], int], set[int]]] | None = None,
+    ) -> float:
         delta_cut = 0.0
         for eidx in self._adj[atom]:
             e = self.edges[eidx]
@@ -318,6 +340,18 @@ class Partition:
         target_cluster_id: int,
     ) -> float:
         """Exact parameterized data-term delta for one atom move without source split."""
+        profiler = self.profiler
+        if profiler is not None:
+            with profiler.time_block("exact_data_delta"):
+                return self._exact_data_delta_impl(atom, src_id, target_cluster_id)
+        return self._exact_data_delta_impl(atom, src_id, target_cluster_id)
+
+    def _exact_data_delta_impl(
+        self,
+        atom: int,
+        src_id: int,
+        target_cluster_id: int,
+    ) -> float:
         src = self.clusters[src_id]
         tgt = self.clusters.get(target_cluster_id)
         src_after_species = dict(src.species_counts)
@@ -416,6 +450,20 @@ class Partition:
         source_after: list[tuple[dict[int, int], dict[tuple[int, int], int], set[int]]],
     ) -> float:
         """Exact data delta when removing one atom disconnects the source cluster."""
+        profiler = self.profiler
+        if profiler is not None:
+            with profiler.time_block("exact_data_delta_with_split"):
+                return self._exact_data_delta_with_split_impl(atom, src_id, target_cluster_id, source_after)
+        return self._exact_data_delta_with_split_impl(atom, src_id, target_cluster_id, source_after)
+
+    def _exact_data_delta_with_split_impl(
+        self,
+        atom: int,
+        src_id: int,
+        target_cluster_id: int,
+        source_after: list[tuple[dict[int, int], dict[tuple[int, int], int], set[int]]],
+    ) -> float:
+        """Exact data delta when removing one atom disconnects the source cluster."""
         src = self.clusters[src_id]
         tgt = self.clusters.get(target_cluster_id)
         tgt_species_counts, tgt_counts = self._target_after_parts(atom, src_id, target_cluster_id)
@@ -436,6 +484,17 @@ class Partition:
             counts[key] = c
 
     def _data_term_from_parts(
+        self,
+        species_counts: dict[int, int],
+        edge_counts: dict[tuple[int, int], int],
+    ) -> float:
+        profiler = self.profiler
+        if profiler is not None:
+            with profiler.time_block("data_term_from_parts"):
+                return self._data_term_from_parts_impl(species_counts, edge_counts)
+        return self._data_term_from_parts_impl(species_counts, edge_counts)
+
+    def _data_term_from_parts_impl(
         self,
         species_counts: dict[int, int],
         edge_counts: dict[tuple[int, int], int],
@@ -497,6 +556,17 @@ class Partition:
         - edge count dict
         - atom id set
         """
+        profiler = self.profiler
+        if profiler is not None:
+            with profiler.time_block("source_after_removal_state"):
+                return self._source_after_removal_state_impl(atom, src_id)
+        return self._source_after_removal_state_impl(atom, src_id)
+
+    def _source_after_removal_state_impl(
+        self,
+        atom: int,
+        src_id: int,
+    ) -> list[tuple[dict[int, int], dict[tuple[int, int], int], set[int]]]:
         if src_id == OTHER_ID:
             return []
 
@@ -569,6 +639,15 @@ class Partition:
 
     def apply_move(self, atom: int, target_cluster_id: int) -> None:
         """Move atom to target_cluster_id, updating all state."""
+        profiler = self.profiler
+        if profiler is not None:
+            with profiler.time_block("apply_move"):
+                self._apply_move_impl(atom, target_cluster_id)
+            return
+        self._apply_move_impl(atom, target_cluster_id)
+
+    def _apply_move_impl(self, atom: int, target_cluster_id: int) -> None:
+        """Move atom to target_cluster_id, updating all state."""
         src_id = int(self.atom_labels[atom])
         if src_id == target_cluster_id:
             return
@@ -626,6 +705,14 @@ class Partition:
         Smaller components become new clusters; the largest component keeps the
         original id. Returns the number of new clusters created.
         """
+        profiler = self.profiler
+        if profiler is not None:
+            with profiler.time_block("split_cluster_if_disconnected"):
+                return self._split_cluster_if_disconnected_impl(cluster_id)
+        return self._split_cluster_if_disconnected_impl(cluster_id)
+
+    def _split_cluster_if_disconnected_impl(self, cluster_id: int) -> int:
+        profiler = self.profiler
         c = self.clusters.get(cluster_id)
         if c is None or len(c.atom_ids) <= 1:
             return 0
@@ -706,6 +793,9 @@ class Partition:
 
         c.invalidate_entropy()
         self._cut_cost_total += delta_cut
+        if profiler is not None:
+            profiler.add_count("split_events", 1)
+            profiler.add_extra("split_components_created", float(n_new))
         return n_new
 
     # ------------------------------------------------------------------
@@ -718,6 +808,13 @@ class Partition:
         Scans the smaller cluster's adjacency to find cross edges once.
         Does NOT mutate partition.
         """
+        profiler = self.profiler
+        if profiler is not None:
+            with profiler.time_block("score_cluster_merge"):
+                return self._score_cluster_merge_impl(cid_a, cid_b)
+        return self._score_cluster_merge_impl(cid_a, cid_b)
+
+    def _score_cluster_merge_impl(self, cid_a: int, cid_b: int) -> float:
         ca = self.clusters[cid_a]
         cb = self.clusters[cid_b]
 
@@ -781,6 +878,14 @@ class Partition:
         src_cid is deleted; tgt_cid accumulates all atoms, counts, and
         the formerly-cut edges between them become internal.
         """
+        profiler = self.profiler
+        if profiler is not None:
+            with profiler.time_block("apply_cluster_merge"):
+                self._apply_cluster_merge_impl(src_cid, tgt_cid)
+            return
+        self._apply_cluster_merge_impl(src_cid, tgt_cid)
+
+    def _apply_cluster_merge_impl(self, src_cid: int, tgt_cid: int) -> None:
         src = self.clusters[src_cid]
         tgt = self.clusters[tgt_cid]
         between_cut_cost = 0.0
@@ -849,6 +954,7 @@ def partition_from_labels(
     kappa_edge: float | None = None,
     parameter_estimator: str = "constrained_map",
     estimator_epsilon: float = 1e-12,
+    profiler: Any = None,
 ) -> Partition:
     """Build a Partition by scanning edges to populate cluster count tables."""
     atom_labels = np.asarray(atom_labels, dtype=int)
@@ -886,6 +992,7 @@ def partition_from_labels(
         kappa_edge=kappa_edge,
         parameter_estimator=parameter_estimator,
         estimator_epsilon=estimator_epsilon,
+        profiler=profiler,
     )
 
 

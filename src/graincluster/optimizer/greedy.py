@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..model.partition import Partition, OTHER_ID
+from .profiling import LiveProfiler
 
 
 @dataclass
@@ -28,6 +29,8 @@ def greedy_optimize(
     max_passes: int = 100,
     allow_splits: bool = True,
     tol: float = -1e-10,
+    profiler: LiveProfiler | None = None,
+    profile_live: bool = False,
 ) -> OptimizeResult:
     """Run greedy local-move optimization on partition (in-place).
 
@@ -46,6 +49,9 @@ def greedy_optimize(
     total_moves = 0
 
     for pass_idx in range(max_passes):
+        tctx = profiler.time_block("greedy_pass") if profiler is not None else None
+        if tctx is not None:
+            tctx.__enter__()
         moves_this_pass = 0
         n_atoms = len(partition.atom_labels)
 
@@ -84,8 +90,17 @@ def greedy_optimize(
             if best_target is not None:
                 partition.apply_move(atom, best_target)
                 moves_this_pass += 1
+                if profiler is not None:
+                    profiler.add_count("accepted_moves", 1)
 
+        if tctx is not None:
+            tctx.__exit__(None, None, None)
         total_moves += moves_this_pass
+        if profile_live and profiler is not None:
+            for line in profiler.format_checkpoint(
+                f"[profile] greedy pass {pass_idx + 1}: moves={moves_this_pass}"
+            ):
+                print(line, flush=True)
         if moves_this_pass == 0:
             break
 

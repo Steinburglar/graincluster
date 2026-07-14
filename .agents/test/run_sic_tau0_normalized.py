@@ -18,11 +18,16 @@ from graincluster.graph.builder import build_edges
 from graincluster.model.entropy import cluster_entropy
 from graincluster.model.partition import OTHER_ID, partition_from_labels
 from graincluster.optimizer.louvain import louvain_optimize
+from graincluster.optimizer.profiling import LiveProfiler
 
 
 ROOT = Path("/n/holylabs/kozinsky_lab/Users/lsteinberger/systems/sic")
 INPUT = ROOT / "data" / "trajectories" / "8katoms" / "19.lammpstrj"
 OUTDIR = ROOT / "analysis" / "graincluster"
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
 
 
 def collect_reference_edges(atoms, cutoff: float, pair_cutoffs: dict[str, float]) -> dict[str, np.ndarray]:
@@ -110,6 +115,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tau-edge", type=float, default=0.0)
     parser.add_argument("--max-rounds", type=int, default=20)
     parser.add_argument("--max-atom-passes", type=int, default=50)
+    parser.add_argument("--profile-live", action="store_true")
     parser.add_argument("--tag", type=str, default="")
     return parser.parse_args()
 
@@ -130,7 +136,7 @@ def main() -> None:
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loading {INPUT} frame={args.frame_index}")
+    log(f"Loading {INPUT} frame={args.frame_index}")
     atoms = read(
         str(INPUT),
         format="lammps-dump-text",
@@ -138,17 +144,17 @@ def main() -> None:
         specorder=["C", "Si"],
     )
     symbols = list(atoms.get_chemical_symbols())
-    print(f"Atoms: {len(atoms)} {dict(Counter(symbols))}")
+    log(f"Atoms: {len(atoms)} {dict(Counter(symbols))}")
 
     pair_dists = collect_reference_edges(atoms, cutoff=cutoff, pair_cutoffs=pair_cutoffs)
     pair_dists = {pk: vals for pk, vals in pair_dists.items() if len(vals) >= 4}
     for pk, vals in sorted(pair_dists.items()):
-        print(f"Reference {pk}: {len(vals)}")
+        log(f"Reference {pk}: {len(vals)}")
 
     bin_scheme = fit_bin_scheme_quantile(pair_dists, n_bins=n_quantile_bins)
     for pk in sorted(bin_scheme.pair_types):
         scheme = bin_scheme.schemes[pk]
-        print(f"Bins {pk}: {scheme.n_bins} [{scheme.range_lo:.3f}, {scheme.range_hi:.3f}]")
+        log(f"Bins {pk}: {scheme.n_bins} [{scheme.range_lo:.3f}, {scheme.range_hi:.3f}]")
 
     frame = Frame(
         index=args.frame_index,
@@ -165,10 +171,11 @@ def main() -> None:
         pbc=(True, True, True),
         pair_cutoffs=pair_cutoffs,
     )
-    print(f"Edges: {len(edges)}")
+    log(f"Edges: {len(edges)}")
 
     labels = np.full(len(atoms), OTHER_ID, dtype=int)
     labels[np.array(symbols) == "C"] = 0
+    profiler = LiveProfiler() if args.profile_live else None
     partition = partition_from_labels(
         labels,
         edges,
@@ -183,8 +190,9 @@ def main() -> None:
         kappa_species=kappa_species,
         kappa_edge=kappa_edge,
         parameter_estimator="constrained_map",
+        profiler=profiler,
     )
-    print(
+    log(
         "Init speciesSiOther "
         f"K={partition.n_clusters()} obj={partition.objective():.4f} "
         f"priors={_prior_label(args)} "
@@ -198,13 +206,15 @@ def main() -> None:
         partition,
         max_rounds=args.max_rounds,
         max_atom_passes=args.max_atom_passes,
+        profiler=profiler,
+        profile_live=args.profile_live,
     )
-    print(
+    log(
         f"Result rounds={result.n_rounds} atom_moves={result.n_atom_moves} "
         f"merges={result.n_cluster_merges}"
     )
-    print(f"Objective {result.objective_initial:.4f} -> {result.objective_final:.4f}")
-    print(f"Final K={partition.n_clusters()}")
+    log(f"Objective {result.objective_initial:.4f} -> {result.objective_final:.4f}")
+    log(f"Final K={partition.n_clusters()}")
 
     real_clusters = sorted(
         [(cid, len(c.atom_ids)) for cid, c in partition.clusters.items() if cid != OTHER_ID],
@@ -272,11 +282,15 @@ def main() -> None:
         out.write(atoms)
     ase_write(str(xyz), atoms)
 
-    print(f"Boundary atoms: {len(boundary_set)}")
-    print(f"Summary: {summary}")
-    print(f"Trajectory: {traj}")
-    print(f"ExtXYZ: {xyz}")
-    print("\n".join(lines[:20]))
+    log(f"Boundary atoms: {len(boundary_set)}")
+    log(f"Summary: {summary}")
+    log(f"Trajectory: {traj}")
+    log(f"ExtXYZ: {xyz}")
+    if profiler is not None:
+        log(f"[profile] total elapsed: {profiler.elapsed():.3f}s")
+        for line in profiler.format_checkpoint("[profile] final totals since last checkpoint"):
+            log(line)
+    log("\n".join(lines[:20]))
 
 
 if __name__ == "__main__":

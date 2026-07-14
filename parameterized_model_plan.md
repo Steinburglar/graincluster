@@ -556,3 +556,161 @@ two-domain graph splits under sparse species/edge priors.
 - Whether `OTHER_ID` should pay species/edge data cost or remain free
   background. Current behavior keeps it free only from `gamma`, not data cost;
   revisit after first implementation.
+
+## Profiling And Speedups
+
+### Live Profiling Workflow
+
+The SiC workflow script now supports live optimization profiling:
+
+```bash
+PYTHONPATH=/n/home12/lsteinberger/code/graincluster/src \
+/n/holylabs/kozinsky_lab/Users/lsteinberger/conda/envs/nequip311/bin/python \
+.agents/test/run_sic_tau0_normalized.py \
+  --frame-index 0 \
+  --tau-species 0 \
+  --tau-edge 0 \
+  --cluster-count-prior-mean 1 \
+  --tau-k 0 \
+  --cut-prior-beta0 1 \
+  --profile-live
+```
+
+Current live profile output reports per-pass and per-round cumulative deltas for:
+
+- `score_move`
+- `exact_data_delta`
+- `exact_data_delta_with_split`
+- `source_after_removal_state`
+- `cut_cost_delta_for_move`
+- `data_term_from_parts`
+- `apply_move`
+- `split_cluster_if_disconnected`
+- `score_cluster_merge`
+- `apply_cluster_merge`
+- `greedy_pass`
+- `merge_sweep`
+- `louvain_round`
+
+This is intended as a first-pass engineering profiler, not a replacement for
+`cProfile`, `perf`, or line-level profilers. It is designed to answer:
+
+- whether runtime is dominated by move scoring or connectivity repair
+- how often the split-aware path is actually taken
+- whether merge scoring is negligible or significant
+- whether exact local rescoring or structural deltas dominate runtime
+
+### Candidate Speedups To Evaluate
+
+No speedups in this section should be implemented blindly. Each should be
+validated against the live profiler first.
+
+#### 1. Skip Prior Terms That Are Provably Constant
+
+Some hyperparameter settings can collapse whole prior contributions into
+constants, which means they should not be recomputed in inner loops.
+
+Examples:
+
+- `tau_edge = 0` with quantile bins gives:
+
+  ```text
+  kappa_edge = B
+  alpha_edge,b = 1
+  ```
+
+  for every edge bin. In that case the Dirichlet prior-density term
+
+  ```text
+  -sum_b (alpha_b - 1) log theta_b
+  ```
+
+  is identically zero. The Dirichlet normalizer is also constant with respect
+  to counts for any nonempty block. That means the edge-prior contribution can
+  often be elided in delta computations under this setting.
+
+- `tau_species = 0` does **not** generically imply a uniform prior over species.
+  It only does so when the base distribution itself is uniform. In the current
+  model the species base is the global species composition, so this shortcut is
+  only valid when the simulation composition is exactly balanced.
+
+- `tau_k = None` already disables the cluster-count prior entirely.
+- `cut_prior_beta0 = None` already disables the cut prior entirely.
+
+The implementation goal should be to detect these constant-prior regimes once
+up front and route the hot path around them.
+
+#### 2. Replace Sparse Dict Filtering With Stable Per-Type Arrays
+
+The current exact deltas still rebuild per-pair-type views from sparse dicts
+repeatedly. A likely high-value refactor is:
+
+- store per-pair-type dense count arrays directly in `ClusterState`
+- maintain them incrementally on edge add/remove
+- stop reconstructing dense arrays inside move scoring
+
+This should reduce:
+
+- repeated sparse key filtering
+- repeated allocation of temporary dense arrays
+- repeated Python-loop overhead in exact local deltas
+
+#### 3. Numba For Numeric Inner Kernels
+
+Numba is plausible for pure numeric kernels with stable array inputs:
+
+- constrained MAP estimation
+- multinomial code-length formulas
+- Dirichlet prior-density evaluation
+- cut-prior negative log density
+
+Numba is **not** likely to help much on the current dict-heavy graph/state
+manipulation path unless the data structures are first converted to stable
+array-based layouts.
+
+So the likely sequence is:
+
+1. stabilize hot paths into arrays
+2. then JIT the numeric kernels
+
+not the reverse.
+
+#### 4. Faster Connectivity Tests Before Full Split Reconstruction
+
+The split-aware path is exact but expensive. A likely optimization is a cheap
+pre-check that can reject most non-splitting moves before running full
+component reconstruction.
+
+Examples:
+
+- articulation-point style local tests
+- bounded BFS around the moved atom
+- degree/topology shortcuts for obviously safe removals
+
+This is likely important because exact split-aware scoring is currently the
+main reason large SiC runs became much slower after the semantics fix.
+
+#### 5. Cache Constant Block Metadata
+
+Likely cheap wins:
+
+- cache `alpha == 1` masks
+- cache which prior terms are active at all
+- cache constant Dirichlet normalizers per pair type
+- cache `d_free = n_categories - 1`
+
+These are small individually, but they are evaluated in very hot code.
+
+#### 6. Profile-Guided Search Changes
+
+If atom-level exact scoring remains dominant even after hot-path cleanup, the
+next step may not be micro-optimization but reducing the number of candidate
+moves evaluated:
+
+- better candidate pruning
+- stronger merge moves
+- coarse-to-fine schedules
+- delayed singleton proposals
+
+This should only be considered after measurement, because it changes optimizer
+search behavior rather than just speeding up fixed semantics.
